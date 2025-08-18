@@ -132,7 +132,8 @@ export const ChapterSearchService = {
 						} 
 					},
 					sort: [{ sequence: 'asc' }], // Always sort by sequence
-					_source: ['uuid', 'chapterId', 'title', 'sequence', 'publishedAt', 'wordCount'] // Only return needed fields
+					_source: ['uuid', 'chapterId', 'title', 'sequence', 'publishedAt', 'wordCount'], // Only return needed fields
+					track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
 				}
 			})
 			

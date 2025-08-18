@@ -88,7 +88,8 @@ export const TaxonomySearchService = {
 				body: {
 					query: { match_all: {} },
 					sort: [{ usageCount: 'desc' }, { tagId: 'asc' }],
-					_source: ['tagId', 'slug', 'names', 'description', 'color', 'usageCount']
+					_source: ['tagId', 'slug', 'names', 'description', 'color', 'usageCount'],
+					track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
 				}
 			})
 			
@@ -185,7 +186,8 @@ export const TaxonomySearchService = {
 				body: {
 					query: { match_all: {} },
 					sort: [{ usageCount: 'desc' }, { genreId: 'asc' }],
-					_source: ['genreId', 'slug', 'names', 'description', 'color', 'usageCount']
+					_source: ['genreId', 'slug', 'names', 'description', 'color', 'usageCount'],
+					track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
 				}
 			})
 			

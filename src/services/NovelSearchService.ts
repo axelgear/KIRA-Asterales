@@ -97,7 +97,6 @@ export const NovelSearchService = {
 				must.push({ 
 					bool: { 
 						must_not: [
-							{ term: { approvalStatus: 'approved' } },
 							{ term: { approvalStatus: 'rejected' } },
 							{ term: { approvalStatus: 'deleted' } }
 						]
@@ -120,7 +119,8 @@ export const NovelSearchService = {
 				size,
 				body: {
 					query: must.length ? { bool: { must } } : { match_all: {} },
-					sort: sortClause
+					sort: sortClause,
+					track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
 				}
 			})
 			
@@ -142,14 +142,14 @@ export const NovelSearchService = {
 			// Build MongoDB query
 			const query: any = {}
 			
-			// Handle approval status filtering
+			// Handle approval status filtering - FIXED LOGIC
 			if (approvalStatus && approvalStatus !== 'all') {
 				// If specific approval status is requested, include it
 				query.approvalStatus = approvalStatus
 			} else {
-				// Default: exclude approved, rejected, and deleted
-				query.approvalStatus = { 
-					$nin: ['approved', 'rejected', 'deleted'] 
+				// Default: exclude  rejected, and deleted
+				query.approvalStatus = {
+					$nin: ['rejected', 'deleted']
 				}
 			}
 			

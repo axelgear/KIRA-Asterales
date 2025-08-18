@@ -105,9 +105,9 @@ export const NovelController = {
 		if (q.size != null) params.size = Number(q.size)
 		if (q.sort != null) params.sort = q.sort === 'popular' ? 'popular' : 'recent'
 		
-		console.log('🔍 Search params received:', params)
+		//console.log('🔍 Search params received:', params)
 		const result = await NovelService.search(params)
-		console.log('📊 Search result:', result)
+		//console.log('📊 Search result:', result)
 		return { success: true, result }
 	},
 

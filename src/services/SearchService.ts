@@ -65,7 +65,8 @@ export class SearchService {
 				genres: { terms: { field: 'genres.genreName.keyword', size: 50 } },
 				tags: { terms: { field: 'tags.tagName.keyword', size: 100 } },
 				status: { terms: { field: 'status', size: 10 } }
-			}
+			},
+			track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
 		}
 
 		const result = await client.search({ index: 'novels-*', body }) as any
@@ -106,7 +107,8 @@ export class SearchService {
 			sort: [
 				{ [sortField]: { order } },
 				{ _score: { order: 'desc' as const } }
-			]
+			],
+			track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
 		}
 
 		const result = await client.search({ index: 'chapters-*', body }) as any

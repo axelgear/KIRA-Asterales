@@ -25,9 +25,10 @@ class ElasticsearchManager {
       console.log('🔍 Connecting to Elasticsearch cluster...');
       console.log(`   Nodes: ${this.clusterNodes.length}`);
       console.log(`   Protocol: ${ENV.ELASTICSEARCH_PROTOCOL}`);
+      console.log(`   Using nodes: ${this.clusterNodes.join(', ')}`);
 
       this.client = new Client({
-        nodes: this.clusterNodes,
+        node: this.clusterNodes,
         auth: {
           username: ENV.ELASTICSEARCH_ADMIN_USERNAME as unknown as string,
           password: ENV.ELASTICSEARCH_ADMIN_PASSWORD as unknown as string
@@ -37,9 +38,10 @@ class ElasticsearchManager {
         },
         maxRetries: 3,
         requestTimeout: 10000,
-        sniffOnStart: true,
-        sniffInterval: 30000,
-        sniffOnConnectionFault: true
+        // Disable sniffing for single external instance to avoid Docker internal IP issues
+        sniffOnStart: false,
+        sniffInterval: 0,
+        sniffOnConnectionFault: false
       });
 
       // Test connection
