@@ -27,8 +27,13 @@ export const ChapterSearchService = {
 					settings: {
 						// Optimize for fast listing and filtering
 						number_of_shards: 1,
-						number_of_replicas: 0, // For development, increase in production
-						refresh_interval: '1s'  // Faster refresh for real-time updates
+						number_of_replicas: 0,
+						refresh_interval: '5s',
+						index: {
+							// Use dot notation for sort configuration
+							"sort.field": "sequence",
+							"sort.order": "asc"
+						}
 					}
 				}
 			})
@@ -43,7 +48,7 @@ export const ChapterSearchService = {
 		await client.index({
 			index: CHAPTER_INDEX,
 			id: chapter.uuid, // Use UUID as document ID for uniqueness
-			refresh: 'wait_for',
+			routing: chapter.novelUuid,
 			body: {
 				uuid: chapter.uuid,
 				chapterId: chapter.chapterId,
@@ -64,7 +69,7 @@ export const ChapterSearchService = {
 		
 		const client = getElasticsearchClient()
 		const operations = chapters.flatMap(chapter => [
-			{ index: { _index: CHAPTER_INDEX, _id: chapter.uuid } },
+			{ index: { _index: CHAPTER_INDEX, _id: chapter.uuid, routing: chapter.novelUuid } },
 			{
 				uuid: chapter.uuid,
 				chapterId: chapter.chapterId,
@@ -80,8 +85,7 @@ export const ChapterSearchService = {
 		])
 
 		await client.bulk({ 
-			body: operations,
-			refresh: 'wait_for'
+			body: operations
 		})
 		console.log(`✅ Bulk indexed ${chapters.length} chapters`)
 	},
@@ -91,12 +95,12 @@ export const ChapterSearchService = {
 		await this.indexChapter(chapter)
 	},
 
-	async deleteChapter(uuid: string) {
+	async deleteChapter(uuid: string, novelUuid?: string) {
 		const client = getElasticsearchClient()
 		await client.delete({ 
 			index: CHAPTER_INDEX, 
-			id: uuid, 
-			refresh: true
+			id: uuid,
+			...(novelUuid ? { routing: novelUuid } : {})
 		})
 	},
 
@@ -107,7 +111,8 @@ export const ChapterSearchService = {
 			body: {
 				query: { term: { novelUuid } }
 			},
-			refresh: true
+			refresh: true,
+			routing: novelUuid
 		})
 		console.log(`✅ Deleted all chapters for novel: ${novelUuid}`)
 	},
@@ -122,18 +127,20 @@ export const ChapterSearchService = {
 				index: CHAPTER_INDEX,
 				from,
 				size: pageSize,
+				routing: novelUuid,
+				request_cache: true,
 				body: {
 					query: { 
 						bool: { 
-							must: [
+							filter: [
 								{ term: { novelUuid } },
 								{ term: { isPublished: true } }
 							]
 						} 
 					},
-					sort: [{ sequence: 'asc' }], // Always sort by sequence
-					_source: ['uuid', 'chapterId', 'title', 'sequence', 'publishedAt', 'wordCount'], // Only return needed fields
-					track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
+					sort: [{ sequence: 'asc' }],
+					_source: ['uuid', 'chapterId', 'title', 'sequence', 'publishedAt', 'wordCount'],
+					track_total_hits: false
 				}
 			})
 			
@@ -148,12 +155,13 @@ export const ChapterSearchService = {
 	},
 
 	// Get chapter by UUID for quick lookups
-	async getChapterByUuid(uuid: string) {
+	async getChapterByUuid(uuid: string, novelUuid?: string) {
 		try {
 			const client = getElasticsearchClient()
 			const result = await client.get({
 				index: CHAPTER_INDEX,
-				id: uuid
+				id: uuid,
+				...(novelUuid ? { routing: novelUuid } : {})
 			})
 			return result._source
 		} catch (error) {

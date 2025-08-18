@@ -53,7 +53,7 @@ export const NovelSearchService = {
 		await client.index({
 			index: NOVEL_INDEX,
 			id: String(novel.novelId),
-			refresh: 'wait_for',
+			// Let index refresh interval handle visibility for write throughput
 			body: {
 				novelId: novel.novelId,
 				uuid: novel.uuid,
@@ -80,36 +80,29 @@ export const NovelSearchService = {
 	},
 	async deleteNovel(novelId: number) {
 		const client = getElasticsearchClient()
-		await client.delete({ index: NOVEL_INDEX, id: String(novelId), refresh: 'wait_for' })
+		await client.delete({ index: NOVEL_INDEX, id: String(novelId) })
 	},
-	async search(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined }) {
+	async search(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; trackTotal?: boolean }) {
 		try {
 			const client = getElasticsearchClient()
-			const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 20, sort = 'recent' } = params
+			const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 20, sort = 'recent', trackTotal = true } = params
 			const must: any[] = []
+			const filter: any[] = []
 			
-			// Handle approval status filtering
+			// Filters (non-scoring)
 			if (approvalStatus && approvalStatus !== 'all') {
-				// If specific approval status is requested, include it
-				must.push({ term: { approvalStatus } })
+				filter.push({ term: { approvalStatus } })
 			} else {
-				// Default: exclude approved, rejected, and deleted
-				must.push({ 
-					bool: { 
-						must_not: [
-							{ term: { approvalStatus: 'rejected' } },
-							{ term: { approvalStatus: 'deleted' } }
-						]
-					}
-				})
+				filter.push({ bool: { must_not: [ { term: { approvalStatus: 'rejected' } }, { term: { approvalStatus: 'deleted' } } ] } })
 			}
+			if (tagIds?.length) filter.push({ terms: { tagIds } })
+			if (genreIds?.length) filter.push({ terms: { genreIds } })
+			if (language && language !== 'all') filter.push({ term: { language } })
+			if (status && status !== 'all') filter.push({ term: { status } })
+			if (source?.length) filter.push({ terms: { source } })
 			
+			// Query (scoring) - only when q provided
 			if (q) must.push({ multi_match: { query: q, fields: ['title^3', 'description'], operator: 'and' } })
-			if (tagIds?.length) must.push({ terms: { tagIds } })
-			if (genreIds?.length) must.push({ terms: { genreIds } })
-			if (language && language !== 'all') must.push({ term: { language } })
-			if (status && status !== 'all') must.push({ term: { status } })
-			if (source?.length) must.push({ terms: { source } }) // Search by source IDs
 			
 			const sortClause = sort === 'popular' ? [{ upvoteCount: 'desc' }, { favoritesCount: 'desc' }, { updatedAt: 'desc' }] : [{ updatedAt: 'desc' }]
 			
@@ -117,10 +110,12 @@ export const NovelSearchService = {
 				index: NOVEL_INDEX,
 				from,
 				size,
+				request_cache: true,
 				body: {
-					query: must.length ? { bool: { must } } : { match_all: {} },
+					_source: ['novelId','uuid','title','coverImg','status','language','views','favoritesCount','chaptersCount','upvoteCount','downvoteCount','source','updatedAt','approvalStatus'],
+					query: must.length ? { bool: { must, filter } } : { bool: { filter } },
 					sort: sortClause,
-					track_total_hits: true // Ensure we get the actual total count, not limited to 10,000
+					track_total_hits: trackTotal
 				}
 			})
 			
@@ -130,7 +125,7 @@ export const NovelSearchService = {
 			return { items, total, from, size }
 		} catch (error) {
 			console.warn('⚠️ Elasticsearch search failed, falling back to MongoDB:', error)
-			return await this.searchMongoDB(params) // Fallback to MongoDB
+			return await this.searchMongoDB(params as any) // Fallback to MongoDB
 		}
 	},
 	
@@ -148,8 +143,8 @@ export const NovelSearchService = {
 				query.approvalStatus = approvalStatus
 			} else {
 				// Default: exclude  rejected, and deleted
-				query.approvalStatus = {
-					$nin: ['rejected', 'deleted']
+				query.approvalStatus = { 
+					$nin: ['rejected', 'deleted'] 
 				}
 			}
 			

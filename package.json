@@ -18,6 +18,7 @@
     "update:approval-status": "tsx src/scripts/update-approval-status.ts",
     "index:chapters": "tsx src/scripts/chapter-indexer.ts",
     "index:taxonomy": "tsx src/scripts/taxonomy-indexer.ts",
+    "index:incremental": "tsx src/scripts/es-incremental-indexer.ts",
     "copy-assets": "copyfiles -u 1 src/assets/**/* dist/",
     "start": "node dist/app.js",
     "test": "jest",

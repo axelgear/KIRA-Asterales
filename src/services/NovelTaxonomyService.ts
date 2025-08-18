@@ -69,10 +69,15 @@ export const NovelTaxonomyService = {
 
 	async listTags(page = 1, pageSize = 100) {
 		try {
+			// Try Redis cache first
+			const cached = await this.getCachedTags(page, pageSize)
+			if (cached) return cached
+			
 			// First try Elasticsearch for fast listing
 			await TaxonomySearchService.ensureTagIndex()
 			const esResult = await TaxonomySearchService.listTags(page, pageSize)
 			if (esResult) {
+				await this.cacheTags(page, pageSize, esResult)
 				console.log(`✅ Tags listed from ES: ${esResult.items.length}/${esResult.total}`)
 				return esResult
 			}
@@ -88,7 +93,9 @@ export const NovelTaxonomyService = {
 					.lean(),
 				NovelTagModel.countDocuments({})
 			])
-			return { items, total, page, pageSize }
+			const result = { items, total, page, pageSize }
+			await this.cacheTags(page, pageSize, result)
+			return result
 		} catch (error) {
 			console.error('❌ Tag listing failed:', error)
 			return { items: [], total: 0, page, pageSize }
@@ -152,10 +159,15 @@ export const NovelTaxonomyService = {
 
 	async listGenres(page = 1, pageSize = 100) {
 		try {
+			// Try Redis cache first
+			const cached = await this.getCachedGenres(page, pageSize)
+			if (cached) return cached
+			
 			// First try Elasticsearch for fast listing
 			await TaxonomySearchService.ensureGenreIndex()
 			const esResult = await TaxonomySearchService.listGenres(page, pageSize)
 			if (esResult) {
+				await this.cacheGenres(page, pageSize, esResult)
 				console.log(`✅ Genres listed from ES: ${esResult.items.length}/${esResult.total}`)
 				return esResult
 			}
@@ -171,7 +183,9 @@ export const NovelTaxonomyService = {
 					.lean(),
 				NovelGenreModel.countDocuments({})
 			])
-			return { items, total, page, pageSize }
+			const result = { items, total, page, pageSize }
+			await this.cacheGenres(page, pageSize, result)
+			return result
 		} catch (error) {
 			console.error('❌ Genre listing failed:', error)
 			return { items: [], total: 0, page, pageSize }
