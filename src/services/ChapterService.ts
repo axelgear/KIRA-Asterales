@@ -6,33 +6,22 @@ import { ChapterSearchService } from './ChapterSearchService.js'
 
 export const ChapterService = {
 	async listChapters(novelId: number, page = 1, pageSize = 50) {
-		try {
-			// First try Elasticsearch for fast listing
-			const novel = await NovelModel.findOne({ novelId }).lean()
-			if (novel?.uuid) {
-				const esResult = await ChapterSearchService.listChaptersByNovel(novel.uuid, page, pageSize)
-				if (esResult) {
-					console.log(`✅ Chapters listed from ES: ${esResult.items.length}/${esResult.total}`)
-					return esResult
-				}
+		// Try fast listing first (single document per novel)
+		const novel = await NovelModel.findOne({ novelId }).lean()
+		if (novel?.uuid) {
+			const fastResult = await ChapterSearchService.fastListChaptersByNovel(novel.uuid, page, pageSize)
+			if (fastResult) {
+				return fastResult
 			}
-			
-			// Fallback to MongoDB if ES fails
-			console.log('🔄 Falling back to MongoDB for chapter listing')
-			const skip = (page - 1) * pageSize
-			const [items, total] = await Promise.all([
-				ChapterModel.find({ novelId, isPublished: true })
-					.sort({ sequence: 1 })
-					.skip(skip)
-					.limit(pageSize)
-					.lean(),
-				ChapterModel.countDocuments({ novelId, isPublished: true })
-			])
-			return { items, total, page, pageSize }
-		} catch (error) {
-			console.error('❌ Chapter listing failed:', error)
-			return { items: [], total: 0, page, pageSize }
 		}
+		
+		// Fallback to individual chapter documents
+		const skip = (page - 1) * pageSize
+		const [items, total] = await Promise.all([
+			ChapterModel.find({ novelId, isPublished: true }).sort({ sequence: 1 }).skip(skip).limit(pageSize).lean(),
+			ChapterModel.countDocuments({ novelId, isPublished: true })
+		])
+		return { items, total }
 	},
 
 	async getChapterByUuid(uuid: string) {

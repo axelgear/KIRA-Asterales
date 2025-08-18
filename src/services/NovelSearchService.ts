@@ -89,7 +89,7 @@ export const NovelSearchService = {
 			const must: any[] = []
 			const filter: any[] = []
 			
-			// Filters (non-scoring)
+			// Filters (non-scoring) - these are cached automatically by ES
 			if (approvalStatus && approvalStatus !== 'all') {
 				filter.push({ term: { approvalStatus } })
 			} else {
@@ -110,7 +110,7 @@ export const NovelSearchService = {
 				index: NOVEL_INDEX,
 				from,
 				size,
-				request_cache: true,
+				request_cache: true, // Enable request cache for repeated queries
 				body: {
 					_source: ['novelId','uuid','title','coverImg','status','language','views','favoritesCount','chaptersCount','upvoteCount','downvoteCount','source','updatedAt','approvalStatus'],
 					query: must.length ? { bool: { must, filter } } : { bool: { filter } },
