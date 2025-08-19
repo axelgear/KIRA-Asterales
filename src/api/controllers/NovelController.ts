@@ -2,10 +2,10 @@ import type { FastifyRequest, FastifyReply } from 'fastify'
 import { NovelService } from '../../services/NovelService.js'
 
 export const NovelController = {
-	// GET /novel/:novelId
+	// GET /novel/:slug
 	get: async (request: FastifyRequest) => {
 		const params = request.params as any
-		const novel = await NovelService.getNovel(Number(params.novelId))
+		const novel = await NovelService.getNovel(String(params.slug))
 		if (!novel) {
 			return { success: false, message: 'Novel not found' }
 		}

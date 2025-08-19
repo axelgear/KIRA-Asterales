@@ -10,8 +10,8 @@ import { NovelSearchService } from './NovelSearchService.js'
 import { ChapterSearchService } from './ChapterSearchService.js'
 
 export const NovelService = {
-	async getNovel(novelId: number) {
-		return await NovelModel.findOne({ novelId }).lean()
+	async getNovel(slug: string) {
+		return await NovelModel.findOne({ slug }).lean()
 	},
 
 	async createNovel(params: { ownerUserId: number; title: string; slug: string; description?: string; tags?: string[]; genres?: string[]; language?: string; coverUrl?: string }) {

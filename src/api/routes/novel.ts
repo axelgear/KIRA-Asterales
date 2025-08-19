@@ -5,7 +5,7 @@ import { createRbacGuard } from '../../plugins/rbac.js'
 export default async function novelRoutes(fastify: FastifyInstance) {
 	// Novel CRUD
 	fastify.post('/novel/create', { preHandler: [createRbacGuard('both')] }, NovelController.create)
-	fastify.get('/novel/:novelId', NovelController.get)
+	fastify.get('/novel/:slug', NovelController.get)
 	fastify.patch('/novel/update', { preHandler: [createRbacGuard('both')] }, NovelController.update)
 	fastify.delete('/novel/delete', { preHandler: [createRbacGuard('both')] }, NovelController.remove)
 
