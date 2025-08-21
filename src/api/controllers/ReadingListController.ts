@@ -7,20 +7,20 @@ export const ReadingListController = {
 		const cookies: any = request.cookies || {}
 		const uid = Number(cookies?.uid)
 		const doc = await ReadingListService.createList(uid, body.name, body.description, body.visibility)
-		return { success: true, result: { listId: doc.listId, uuid: doc.uuid } }
+		return { success: true, result: { uuid: doc.uuid } }
 	},
 	updateList: async (request: FastifyRequest) => {
 		const body = request.body as any
 		const cookies: any = request.cookies || {}
 		const uid = Number(cookies?.uid)
-		const updated = await ReadingListService.updateList(uid, Number(body.listId), body)
+		const updated = await ReadingListService.updateList(uid, String(body.listUuid), body)
 		return { success: !!updated }
 	},
 	deleteList: async (request: FastifyRequest) => {
 		const body = request.body as any
 		const cookies: any = request.cookies || {}
 		const uid = Number(cookies?.uid)
-		await ReadingListService.deleteList(uid, Number(body.listId))
+		await ReadingListService.deleteList(uid, String(body.listUuid))
 		return { success: true }
 	},
 	myLists: async (request: FastifyRequest) => {
@@ -38,19 +38,19 @@ export const ReadingListController = {
 		const body = request.body as any
 		const cookies: any = request.cookies || {}
 		const uid = Number(cookies?.uid)
-		await ReadingListService.addItem(uid, Number(body.listId), { novelId: Number(body.novelId), novelUuid: String(body.novelUuid) }, body.order, body.notes)
+		await ReadingListService.addItem(uid, String(body.listUuid), { novelSlug: String(body.novelSlug), novelUuid: String(body.novelUuid) })
 		return { success: true }
 	},
 	removeItem: async (request: FastifyRequest) => {
 		const body = request.body as any
 		const cookies: any = request.cookies || {}
 		const uid = Number(cookies?.uid)
-		await ReadingListService.removeItem(uid, Number(body.listId), Number(body.novelId))
+		await ReadingListService.removeItem(uid, String(body.listUuid), String(body.novelSlug))
 		return { success: true }
 	},
 	listItems: async (request: FastifyRequest) => {
 		const q = request.query as any
-		const data = await ReadingListService.listItems(Number(q.listId), Number(q.page) || 1, Number(q.pageSize) || 50)
+		const data = await ReadingListService.listItems(String(q.listUuid), Number(q.page) || 1, Number(q.pageSize) || 50)
 		return { success: true, result: data }
 	}
 } 

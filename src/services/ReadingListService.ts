@@ -5,18 +5,17 @@ import { ReadingListItemModel } from '../infrastructure/models/ReadingListItem.j
 
 export const ReadingListService = {
 	async createList(ownerUserId: number, name: string, description?: string, visibility: 'private' | 'public' | 'unlisted' = 'private') {
-		const listId = await getNextSequence('readingListId')
 		const uuid = randomUUID()
-		const doc = await ReadingListModel.create({ listId, uuid, ownerUserId, name, description: description || '', visibility })
+		const doc = await ReadingListModel.create({ uuid, ownerUserId, name, description: description || '', visibility })
 		return doc
 	},
-	async updateList(ownerUserId: number, listId: number, patch: Partial<{ name: string; description: string; visibility: 'private' | 'public' | 'unlisted'; coverNovelId: number }>) {
-		const updated = await ReadingListModel.findOneAndUpdate({ listId, ownerUserId }, { $set: patch }, { new: true })
+	async updateList(ownerUserId: number, listUuid: string, patch: Partial<{ name: string; description: string; visibility: 'private' | 'public' | 'unlisted'; coverNovelId: number }>) {
+		const updated = await ReadingListModel.findOneAndUpdate({ uuid: listUuid, ownerUserId }, { $set: patch }, { new: true })
 		return updated
 	},
-	async deleteList(ownerUserId: number, listId: number) {
-		await ReadingListItemModel.deleteMany({ listId })
-		await ReadingListModel.deleteOne({ listId, ownerUserId })
+	async deleteList(ownerUserId: number, listUuid: string) {
+		await ReadingListItemModel.deleteMany({ listUuid })
+		await ReadingListModel.deleteOne({ uuid: listUuid, ownerUserId })
 		return { success: true }
 	},
 	async myLists(ownerUserId: number) {
@@ -29,27 +28,33 @@ export const ReadingListService = {
 		const items = await ReadingListModel.find(query).sort({ updatedAt: -1 }).lean()
 		return items
 	},
-	async addItem(ownerUserId: number, listId: number, novel: { novelId: number; novelUuid: string }, order?: number, notes?: string) {
+	async addItem(ownerUserId: number, listUuid: string, novel: { novelSlug: string; novelUuid: string }) {
 		// Verify ownership
-		const list = await ReadingListModel.findOne({ listId, ownerUserId }).lean()
+		const list = await ReadingListModel.findOne({ uuid: listUuid, ownerUserId }).lean()
 		if (!list) throw new Error('List not found')
 		const itemId = await getNextSequence('readingListItemId')
-		await ReadingListItemModel.updateOne({ listId, novelId: novel.novelId }, { $setOnInsert: { itemId, novelUuid: novel.novelUuid, order: order ?? 0, notes: notes ?? '' } }, { upsert: true })
-		await ReadingListModel.updateOne({ listId }, { $inc: { itemsCount: 1 }, $set: { coverNovelId: novel.novelId } })
+		await ReadingListItemModel.updateOne({ listUuid, novelSlug: novel.novelSlug }, { $setOnInsert: { itemId, novelUuid: novel.novelUuid } }, { upsert: true })
+		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: 1 } })
 		return { success: true }
 	},
-	async removeItem(ownerUserId: number, listId: number, novelId: number) {
-		const list = await ReadingListModel.findOne({ listId, ownerUserId }).lean()
+	async removeItem(ownerUserId: number, listUuid: string, novelSlug: string) {
+		const list = await ReadingListModel.findOne({ uuid: listUuid, ownerUserId }).lean()
 		if (!list) throw new Error('List not found')
-		await ReadingListItemModel.deleteOne({ listId, novelId })
-		await ReadingListModel.updateOne({ listId }, { $inc: { itemsCount: -1 } })
+		await ReadingListItemModel.deleteOne({ listUuid, novelSlug })
+		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: -1 } })
 		return { success: true }
 	},
-	async listItems(listId: number, page = 1, pageSize = 50) {
+	async listItems(listUuid: string, page = 1, pageSize = 50) {
+		// Verify the list exists
+		const list = await ReadingListModel.findOne({ uuid: listUuid }).lean()
+		if (!list) {
+			throw new Error('Reading list not found')
+		}
+		
 		const skip = (page - 1) * pageSize
 		const [items, total] = await Promise.all([
-			ReadingListItemModel.find({ listId }).sort({ order: 1, addedAtMs: -1 }).skip(skip).limit(pageSize).lean(),
-			ReadingListItemModel.countDocuments({ listId })
+			ReadingListItemModel.find({ listUuid }).sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean(),
+			ReadingListItemModel.countDocuments({ listUuid })
 		])
 		return { items, total }
 	}

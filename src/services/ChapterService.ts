@@ -3,22 +3,29 @@ import { getNextSequence } from '../infrastructure/models/Sequence.js'
 import { randomUUID } from 'node:crypto'
 import { NovelModel } from '../infrastructure/models/Novel.js'
 import { ChapterSearchService } from './ChapterSearchService.js'
+import { ChapterListSearchService } from './ChapterListSearchService.js'
 
 export const ChapterService = {
 	async listChapters(novelId: number, page = 1, pageSize = 50) {
 		try {
-			// First try Elasticsearch for fast listing
+			// Prefer chapter-list single-doc for fastest listing
 			const novel = await NovelModel.findOne({ novelId }).lean()
+			if (novel?.uuid) {
+				const listResult = await ChapterListSearchService.listByNovel(novel.uuid, page, pageSize)
+				if (listResult) {
+					return listResult
+				}
+			}
+			
+			// Fallback to per-chapter ES listing
 			if (novel?.uuid) {
 				const esResult = await ChapterSearchService.listChaptersByNovel(novel.uuid, page, pageSize)
 				if (esResult) {
-					console.log(`✅ Chapters listed from ES: ${esResult.items.length}/${esResult.total}`)
 					return esResult
 				}
 			}
 			
-			// Fallback to MongoDB if ES fails
-			console.log('🔄 Falling back to MongoDB for chapter listing')
+			// Fallback to MongoDB
 			const skip = (page - 1) * pageSize
 			const [items, total] = await Promise.all([
 				ChapterModel.find({ novelId, isPublished: true })
@@ -54,6 +61,9 @@ export const ChapterService = {
 			wordCount: params.content.trim().split(/\s+/).length
 		})
 		
+		// Rebuild single-doc list
+		await ChapterListSearchService.rebuildNovel(params.novelUuid, params.novelId)
+		
 		return chapter
 	},
 
@@ -69,11 +79,21 @@ export const ChapterService = {
 			{ new: true }
 		)
 		
+		// Rebuild single-doc list
+		if (updated?.novelUuid && updated?.novelId) {
+			await ChapterListSearchService.rebuildNovel(updated.novelUuid, updated.novelId)
+		}
+		
 		return updated
 	},
 
 	async deleteChapter(chapterId: number) {
+		const chapter = await ChapterModel.findOne({ chapterId }).lean()
 		await ChapterModel.deleteOne({ chapterId })
+		// Rebuild single-doc list
+		if (chapter?.novelUuid && chapter?.novelId) {
+			await ChapterListSearchService.rebuildNovel(chapter.novelUuid, chapter.novelId)
+		}
 		return { success: true }
 	},
 
@@ -81,7 +101,7 @@ export const ChapterService = {
 		const chapter = await ChapterModel.findOne({ chapterId }).lean()
 		if (!chapter) return { success: false, message: 'Chapter not found' }
 		
-		const { novelId, sequence } = chapter
+		const { novelId, sequence, novelUuid } = chapter
 		
 		if (direction === 'up' && sequence > 1) {
 			// Swap with previous chapter
@@ -97,6 +117,11 @@ export const ChapterService = {
 				await ChapterModel.updateOne({ chapterId: nextChapter.chapterId }, { $set: { sequence } })
 				await ChapterModel.updateOne({ chapterId }, { $set: { sequence: sequence + 1 } })
 			}
+		}
+		
+		// Rebuild single-doc list
+		if (novelUuid) {
+			await ChapterListSearchService.rebuildNovel(novelUuid, novelId)
 		}
 		
 		return { success: true }

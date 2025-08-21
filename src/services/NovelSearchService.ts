@@ -1,6 +1,5 @@
 import { getElasticsearchClient } from '../infrastructure/elasticsearch.js'
 import { NovelModel } from '../infrastructure/models/Novel.js'
-import { ChapterModel } from '../infrastructure/models/Chapter.js'
 
 const NOVEL_INDEX = 'novels'
 
@@ -31,25 +30,11 @@ export const NovelSearchService = {
 							source: { type: 'integer' }, // Array of source IDs
 							tagIds: { type: 'integer' },
 							genreIds: { type: 'integer' },
+							firstChapter: { type: 'keyword' },
+							latestChapter: { type: 'keyword' },
 							approvalStatus: { type: 'keyword' }, // Add approval status field
 							createdAt: { type: 'date' },
-							updatedAt: { type: 'date' },
-							firstChapter: {
-								type: 'object',
-								properties: {
-									uuid: { type: 'keyword' },
-									title: { type: 'text', analyzer: 'standard' },
-									sequence: { type: 'integer' }
-								}
-							},
-							latestChapter: {
-								type: 'object',
-								properties: {
-									uuid: { type: 'keyword' },
-									title: { type: 'text', analyzer: 'standard' },
-									sequence: { type: 'integer' }
-								}
-							}
+							updatedAt: { type: 'date' }
 						}
 					}
 				}
@@ -66,18 +51,6 @@ export const NovelSearchService = {
 		
 		// Set default approval status if not present
 		const approvalStatus = novel.approvalStatus || 'pending'
-
-		// Compute first/latest chapter (Mongo fallback is fine for indexing-time)
-		let firstChapter: { uuid: string; title: string; sequence: number } | undefined
-		let latestChapter: { uuid: string; title: string; sequence: number } | undefined
-		try {
-			const [first, last] = await Promise.all([
-				ChapterModel.findOne({ novelId: novel.novelId, isPublished: true }).sort({ sequence: 1 }).lean(),
-				ChapterModel.findOne({ novelId: novel.novelId, isPublished: true }).sort({ sequence: -1 }).lean(),
-			])
-			if (first) firstChapter = { uuid: first.uuid, title: first.title, sequence: Number(first.sequence) || 1 }
-			if (last) latestChapter = { uuid: last.uuid, title: last.title, sequence: Number(last.sequence) || (firstChapter?.sequence ?? 1) }
-		} catch {}
 		
 		await client.index({
 			index: NOVEL_INDEX,
@@ -101,11 +74,11 @@ export const NovelSearchService = {
 				source: novel.source, // Add source to the indexed document
 				tagIds,
 				genreIds,
+				firstChapter: novel.firstChapter,
+				latestChapter: novel.latestChapter,
 				approvalStatus, // Add approval status to the indexed document
 				createdAt: novel.createdAt,
 				updatedAt: novel.updatedAt,
-				...(firstChapter ? { firstChapter } : {}),
-				...(latestChapter ? { latestChapter } : {}),
 			}
 		})
 	},
@@ -143,7 +116,7 @@ export const NovelSearchService = {
 				size,
 				request_cache: true, // Enable request cache for repeated queries
 				body: {
-					_source: ['uuid','slug','title','coverImg','status','language','views','favoritesCount','chaptersCount','upvoteCount','downvoteCount','updatedAt','approvalStatus','firstChapter','latestChapter'],
+					_source: ['novelId', 'uuid', 'slug', 'title', 'coverImg', 'status', 'language', 'views', 'favoritesCount', 'chaptersCount', 'upvoteCount', 'downvoteCount', 'updatedAt', 'approvalStatus', 'tagIds', 'genreIds', 'firstChapter', 'latestChapter'],
 					query: must.length ? { bool: { must, filter } } : { bool: { filter } },
 					sort: sortClause,
 					track_total_hits: trackTotal
