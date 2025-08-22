@@ -21,6 +21,18 @@ const NovelSchema = new Schema({
 	chaptersCount: { type: Number, default: 0, index: true },
 	upvoteCount: { type: Number, default: 0, required: true, index: true },
 	downvoteCount: { type: Number, default: 0, required: true, index: true },
+	
+	// Chapter info
+	firstChapter: {
+		uuid: { type: String },
+		title: { type: String },
+		sequence: { type: Number }
+	},
+	latestChapter: {
+		uuid: { type: String },
+		title: { type: String },
+		sequence: { type: Number }
+	}
 }, { timestamps: true, versionKey: false, collection: 'novels' })
 
 // Compound indexes for common queries

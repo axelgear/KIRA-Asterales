@@ -76,6 +76,78 @@ export const NovelController = {
 		return { success: true, result: { commentId: c.commentId } }
 	},
 
+	// POST /novel/populate-chapters - Populate chapter info for a specific novel (admin only)
+	populateChapterInfo: async (request: FastifyRequest) => {
+		try {
+			const body = request.body as any
+			const { novelId } = body
+			
+			if (!novelId) {
+				return { success: false, message: 'novelId required' }
+			}
+			
+			console.log(`🔍 Populating chapter info for novel: ${novelId}`)
+			const result = await NovelService.populateChapterInfo(Number(novelId))
+			
+			return { 
+				success: result, 
+				message: result ? 'Chapter info populated successfully' : 'Failed to populate chapter info',
+				result: { novelId, populated: result }
+			}
+		} catch (error) {
+			console.error('❌ Error populating chapter info:', error)
+			return { 
+				success: false, 
+				message: 'Error populating chapter info',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// POST /novel/populate-all-chapters - Populate chapter info for all novels (admin only)
+	populateAllChapterInfo: async (request: FastifyRequest) => {
+		try {
+			console.log('🔍 Populating chapter info for all novels...')
+			const result = await NovelService.populateAllNovelsChapterInfo()
+			
+			return { 
+				success: true, 
+				message: 'Chapter info population completed',
+				result 
+			}
+		} catch (error) {
+			console.error('❌ Error populating all chapter info:', error)
+			return { 
+				success: false, 
+				message: 'Error populating all chapter info',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// POST /novel/rebuild-index - Rebuild Elasticsearch index (admin only)
+	rebuildIndex: async (request: FastifyRequest) => {
+		try {
+			console.log('🔨 Rebuilding novel Elasticsearch index...')
+			
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const result = await NovelSearchService.rebuildIndex()
+			
+			return { 
+				success: result.success, 
+				message: result.success ? 'Index rebuilt successfully' : 'Failed to rebuild index',
+				result 
+			}
+		} catch (error) {
+			console.error('❌ Error rebuilding novel index:', error)
+			return { 
+				success: false, 
+				message: 'Error rebuilding index',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
 	// POST /novel/like | /novel/dislike
 	likeNovel: async (request: FastifyRequest) => {
 		const body = request.body as any

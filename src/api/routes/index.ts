@@ -14,6 +14,9 @@ export default async function registerRoutes(fastify: FastifyInstance) {
 	const ChapterRoutes = (await import('./chapter.js')).default
 	await fastify.register(ChapterRoutes)
 
+	const CacheRoutes = (await import('./cache.js')).default
+	await fastify.register(CacheRoutes)
+
 	const ReadingListRoutes = (await import('./reading-list.js')).default
 	await fastify.register(ReadingListRoutes)
 

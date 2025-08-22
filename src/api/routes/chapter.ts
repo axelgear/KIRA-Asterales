@@ -6,8 +6,11 @@ export default async function chapterRoutes(fastify: FastifyInstance) {
 	// List chapters (public)
 	fastify.get('/chapter/list', ChapterController.list)
 	
-	// Get chapter by UUID (public)
+	// Get chapter by UUID (public) - with Redis caching
 	fastify.get('/chapter/:uuid', ChapterController.get)
+	
+	// Rebuild Elasticsearch chapter lists (admin only)
+	fastify.post('/chapter/rebuild', { preHandler: [createRbacGuard('both')] }, ChapterController.rebuild)
 	
 	// Create chapter (requires RBAC)
 	fastify.post('/chapter/create', { preHandler: [createRbacGuard('both')] }, ChapterController.create)

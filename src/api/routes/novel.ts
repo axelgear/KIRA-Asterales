@@ -28,6 +28,11 @@ export default async function novelRoutes(fastify: FastifyInstance) {
 	// Search
 	fastify.get('/novel/search', NovelController.search)
 
+	// Index management (admin only)
+	fastify.post('/novel/rebuild-index', NovelController.rebuildIndex)
+	fastify.post('/novel/populate-chapters', NovelController.populateChapterInfo)
+	fastify.post('/novel/populate-all-chapters', NovelController.populateAllChapterInfo)
+
 	// Comment moderation routes
 	fastify.get('/novel/comments', { preHandler: [createRbacGuard('both')] }, NovelController.listComments)
 	fastify.post('/novel/comment/delete', { preHandler: [createRbacGuard('both')] }, NovelController.deleteComment)

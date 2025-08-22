@@ -30,8 +30,22 @@ export const NovelSearchService = {
 							source: { type: 'integer' }, // Array of source IDs
 							tagIds: { type: 'integer' },
 							genreIds: { type: 'integer' },
-							firstChapter: { type: 'keyword' },
-							latestChapter: { type: 'keyword' },
+							firstChapter: {
+								type: 'object',
+								properties: {
+									uuid: { type: 'keyword' },
+									title: { type: 'text' },
+									sequence: { type: 'integer' }
+								}
+							},
+							latestChapter: {
+								type: 'object',
+								properties: {
+									uuid: { type: 'keyword' },
+									title: { type: 'text' },
+									sequence: { type: 'integer' }
+								}
+							},
 							approvalStatus: { type: 'keyword' }, // Add approval status field
 							createdAt: { type: 'date' },
 							updatedAt: { type: 'date' }
@@ -86,10 +100,79 @@ export const NovelSearchService = {
 		const client = getElasticsearchClient()
 		await client.delete({ index: NOVEL_INDEX, id: String(novelId) })
 	},
+
+	// Rebuild index with new mapping (useful when mapping changes)
+	async rebuildIndex() {
+		try {
+			const client = getElasticsearchClient()
+			const exists = await client.indices.exists({ index: NOVEL_INDEX })
+			
+			if (exists) {
+				console.log('🗑️ Deleting existing index for rebuild...')
+				await client.indices.delete({ index: NOVEL_INDEX })
+			}
+			
+			console.log('🔨 Rebuilding index with new mapping...')
+			await this.ensureIndex()
+			
+			// Re-index all novels
+			const novels = await NovelModel.find({}).lean()
+			console.log(`📝 Re-indexing ${novels.length} novels...`)
+			
+			for (const novel of novels) {
+				try {
+					await this.indexNovel(novel)
+				} catch (error) {
+					console.warn(`⚠️ Failed to re-index novel ${novel.slug}:`, error)
+				}
+			}
+			
+			console.log(`✅ Index rebuilt successfully with ${novels.length} novels`)
+			return { success: true, indexed: novels.length }
+		} catch (error) {
+			console.error('❌ Failed to rebuild index:', error)
+			return { success: false, error: error instanceof Error ? error.message : String(error) }
+		}
+	},
+
+	// Get novel by slug from Elasticsearch (fast lookup)
+	async getNovelBySlug(slug: string) {
+		try {
+			const client = getElasticsearchClient()
+			await this.ensureIndex()
+			
+			const result = await client.search({
+				index: NOVEL_INDEX,
+				body: {
+					query: {
+						term: { slug }
+					},
+					_source: true,
+					size: 1
+				}
+			})
+			
+			if (result.hits.hits.length > 0) {
+				const hit = result.hits.hits[0]
+				if (hit && hit._source) {
+					const novel = hit._source
+					console.log(`✅ Novel ${slug} found in Elasticsearch`)
+					return novel
+				}
+			}
+			
+			console.log(`❌ Novel ${slug} not found in Elasticsearch`)
+			return null
+		} catch (error) {
+			console.error(`❌ Elasticsearch lookup failed for novel ${slug}:`, error)
+			return null
+		}
+	},
+
 	async search(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; trackTotal?: boolean }) {
 		try {
 			const client = getElasticsearchClient()
-			const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 20, sort = 'recent', trackTotal = true } = params
+			const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 24, sort = 'recent', trackTotal = true } = params
 			const must: any[] = []
 			const filter: any[] = []
 			
@@ -110,21 +193,21 @@ export const NovelSearchService = {
 			
 			const sortClause = sort === 'popular' ? [{ upvoteCount: 'desc' }, { favoritesCount: 'desc' }, { updatedAt: 'desc' }] : [{ updatedAt: 'desc' }]
 			
-			const result = await client.search({
+			const searchResult = await client.search({
 				index: NOVEL_INDEX,
 				from,
 				size,
 				request_cache: true, // Enable request cache for repeated queries
 				body: {
-					_source: ['novelId', 'uuid', 'slug', 'title', 'coverImg', 'status', 'language', 'views', 'favoritesCount', 'chaptersCount', 'upvoteCount', 'downvoteCount', 'updatedAt', 'approvalStatus', 'tagIds', 'genreIds', 'firstChapter', 'latestChapter'],
+					_source: ['novelId', 'uuid', 'slug', 'title', 'coverImg', 'status', 'language','description', 'views', 'favoritesCount', 'chaptersCount', 'upvoteCount', 'downvoteCount', 'updatedAt', 'approvalStatus', 'tagIds', 'genreIds', 'firstChapter', 'latestChapter'],
 					query: must.length ? { bool: { must, filter } } : { bool: { filter } },
 					sort: sortClause,
 					track_total_hits: trackTotal
 				}
 			})
 			
-			const items = result.hits.hits.map((h: any) => h._source)
-			const total = typeof result.hits.total === 'number' ? result.hits.total : result.hits.total?.value || 0
+			const items = searchResult.hits.hits.map((h: any) => h._source)
+			const total = typeof searchResult.hits.total === 'number' ? searchResult.hits.total : searchResult.hits.total?.value || 0
 			
 			return { items, total, from, size }
 		} catch (error) {
