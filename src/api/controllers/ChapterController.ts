@@ -5,41 +5,26 @@ export const ChapterController = {
 	// GET /chapter/list
 	list: async (request: FastifyRequest) => {
 		const q = request.query as any
-		let novelUuid: string | undefined
-		
+		// Support both 'uuid' and 'novelUuid' for backward compatibility
+		let uuid = q.novelUuid
+
 		console.log('🔍 Chapter list request query:', q)
-		
-		// Handle novelUuid parameter directly
-		if (q.novelUuid) {
-			novelUuid = q.novelUuid
-			console.log('✅ Using novelUuid directly:', novelUuid)
-		} else if (q.novelId) {
-			// Fallback: convert novelId to novelUuid if needed
-			console.log('📝 Converting novelId to novelUuid...')
-			const NovelModel = (await import('../../infrastructure/models/Novel.js')).NovelModel
-			const novel = await NovelModel.findOne({ novelId: Number(q.novelId) }).lean()
-			if (novel) {
-				novelUuid = novel.uuid
-				console.log('✅ Converted novelId to novelUuid:', novelUuid)
-			} else {
-				console.log('❌ Novel not found for novelId:', q.novelId)
-				return { success: false, message: 'Novel not found' }
-			}
+
+		if (!uuid) {
+			console.log('❌ No uuid or novelUuid provided')
+			return { success: false, message: 'Novel UUID required' }
 		}
-		
-		if (!novelUuid) {
-			console.log('❌ No novelUuid available')
-			return { success: false, message: 'Novel UUID or ID required' }
-		}
+
+		console.log('✅ Using novel UUID:', uuid)
 		
 		// Handle 'from' parameter directly instead of converting to page
 		const from = Number(q.from) || 0
 		const size = Number(q.size) || 50
-		
-		console.log('📊 Pagination params:', { from, size, novelUuid })
-		
-		// Pass novelUuid directly to service for more efficient querying
-		const result = await ChapterService.listChapters(novelUuid, from, size)
+
+		console.log('📊 Pagination params:', { from, size, uuid })
+
+		// Pass uuid directly to service for querying
+		const result = await ChapterService.listChapters(uuid, from, size)
 		
 		console.log('📋 Service result:', { 
 			itemsCount: result.items?.length || 0, 
@@ -54,17 +39,17 @@ export const ChapterController = {
 			try {
 				const ChapterModel = (await import('../../infrastructure/models/Chapter.js')).ChapterModel
 				
-				// Test by novelUuid directly (more efficient)
-				const byNovelUuid = await ChapterModel.find({ novelUuid, isPublished: true })
+				// Test by uuid directly (more efficient)
+				const byUuid = await ChapterModel.find({ novelUuid: uuid, isPublished: true })
 					.select('uuid title sequence novelId')
 					.sort({ sequence: 1 })
 					.limit(5)
 					.lean()
 				
 				console.log('📊 Direct MongoDB test results:', {
-					byNovelUuid: {
-						found: byNovelUuid.length,
-						sample: byNovelUuid.map(c => ({ uuid: c.uuid, title: c.title, sequence: c.sequence, novelId: c.novelId }))
+					byUuid: {
+						found: byUuid.length,
+						sample: byUuid.map(c => ({ uuid: c.uuid, title: c.title, sequence: c.sequence, novelId: c.novelId }))
 					}
 				})
 			} catch (mongoError) {

@@ -176,6 +176,10 @@ export const NovelController = {
 		if (q.from != null) params.from = Number(q.from)
 		if (q.size != null) params.size = Number(q.size)
 		if (q.sort != null) params.sort = q.sort === 'popular' ? 'popular' : 'recent'
+		// Backward-compat: support `order` as alias for sort
+		if (params.sort == null && q.order != null) params.sort = q.order === 'popular' ? 'popular' : 'recent'
+		if (q.sortDirection != null) params.sortDirection = String(q.sortDirection)
+		if (q.trackTotal != null) params.trackTotal = String(q.trackTotal).toLowerCase() === 'true'
 		
 		//console.log('🔍 Search params received:', params)
 		const result = await NovelService.search(params)
@@ -215,6 +219,180 @@ export const NovelController = {
 		const params = request.params as any
 		const comment = await NovelService.getComment(Number(params.commentId))
 		return { success: true, result: comment }
+	},
+
+	// POST /novel/cache/clear - Clear search cache (admin only)
+	clearSearchCache: async (request: FastifyRequest) => {
+		try {
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const result = await NovelSearchService.clearSearchCache()
+
+			return {
+				success: true,
+				message: 'Search cache cleared successfully',
+				result
+			}
+		} catch (error) {
+			console.error('❌ Error clearing search cache:', error)
+			return {
+				success: false,
+				message: 'Error clearing search cache',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// GET /novel/cache/stats - Get search cache statistics (admin only)
+	getCacheStats: async (request: FastifyRequest) => {
+		try {
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const stats = await NovelSearchService.getCacheStats()
+
+			return {
+				success: true,
+				result: stats
+			}
+		} catch (error) {
+			console.error('❌ Error getting cache stats:', error)
+			return {
+				success: false,
+				message: 'Error getting cache stats',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// POST /novel/cache/warmup - Warm up search cache (admin only)
+	warmupCache: async (request: FastifyRequest) => {
+		try {
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			await NovelSearchService.warmupCache()
+
+			return {
+				success: true,
+				message: 'Search cache warmed up successfully'
+			}
+		} catch (error) {
+			console.error('❌ Error warming up cache:', error)
+			return {
+				success: false,
+				message: 'Error warming up cache',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// GET /novel/search/suggestions - Get search suggestions/autocomplete
+	searchSuggestions: async (request: FastifyRequest) => {
+		try {
+			const q = request.query as any
+			const prefix = String(q.prefix || '').trim()
+			const limit = Math.min(parseInt(q.limit) || 10, 20) // Max 20 suggestions
+
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const suggestions = await NovelSearchService.getSearchSuggestions(prefix, limit)
+
+			// Return only essential fields
+			const cleanSuggestions = suggestions.map((suggestion: any) => ({
+				searchTerm: suggestion.searchTerm,
+				searchCount: suggestion.searchCount
+			}))
+
+			return {
+				success: true,
+				result: cleanSuggestions
+			}
+		} catch (error) {
+			console.error('❌ Error getting search suggestions:', error)
+			return {
+				success: false,
+				message: 'Error getting search suggestions',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// GET /novel/search/popular - Get popular search terms
+	popularSearchTerms: async (request: FastifyRequest) => {
+		try {
+			const q = request.query as any
+			const limit = Math.min(parseInt(q.limit) || 10, 20) // Max 20 terms
+
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const terms = await NovelSearchService.getPopularSearchTerms(limit)
+
+			// Return only essential fields
+			const cleanTerms = terms.map((term: any) => ({
+				searchTerm: term.searchTerm,
+				searchCount: term.searchCount
+			}))
+
+			return {
+				success: true,
+				result: cleanTerms
+			}
+		} catch (error) {
+			console.error('❌ Error getting popular search terms:', error)
+			return {
+				success: false,
+				message: 'Error getting popular search terms',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// GET /novel/search/recent - Get recent search terms
+	recentSearchTerms: async (request: FastifyRequest) => {
+		try {
+			const q = request.query as any
+			const limit = Math.min(parseInt(q.limit) || 10, 20) // Max 20 terms
+
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const terms = await NovelSearchService.getRecentSearchTerms(limit)
+
+			// Return only essential fields
+			const cleanTerms = terms.map((term: any) => ({
+				searchTerm: term.searchTerm,
+				searchCount: term.searchCount
+			}))
+
+			return {
+				success: true,
+				result: cleanTerms
+			}
+		} catch (error) {
+			console.error('❌ Error getting recent search terms:', error)
+			return {
+				success: false,
+				message: 'Error getting recent search terms',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
+
+	// POST /novel/search/cleanup - Cleanup old search terms (admin only)
+	cleanupSearchTerms: async (request: FastifyRequest) => {
+		try {
+			const body = request.body as any
+			const keepDays = parseInt(body.keepDays) || 30
+			const minCount = parseInt(body.minCount) || 3
+
+			const { NovelSearchService } = await import('../../services/NovelSearchService.js')
+			const result = await NovelSearchService.cleanupSearchTerms(keepDays, minCount)
+
+			return {
+				success: true,
+				message: 'Search terms cleaned up successfully',
+				result
+			}
+		} catch (error) {
+			console.error('❌ Error cleaning up search terms:', error)
+			return {
+				success: false,
+				message: 'Error cleaning up search terms',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
 	},
 
 	// Public endpoint for listing novel comments

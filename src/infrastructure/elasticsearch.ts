@@ -36,12 +36,15 @@ class ElasticsearchManager {
         tls: {
           rejectUnauthorized: false // For development, enable in production
         },
-        maxRetries: 3,
-        requestTimeout: 10000,
-        // Disable sniffing for single external instance to avoid Docker internal IP issues
+        // Performance optimizations
+        maxRetries: 1, // Reduce retries for faster failure
+        requestTimeout: 5000, // Reduce timeout from 10s to 5s
+        pingTimeout: 3000,
         sniffOnStart: false,
         sniffInterval: 0,
-        sniffOnConnectionFault: false
+        sniffOnConnectionFault: false,
+        // Compression for better network performance
+        compression: true
       });
 
       // Test connection
@@ -114,15 +117,98 @@ class ElasticsearchManager {
 
     try {
       const health = await this.client.cluster.health();
+      const stats = await this.client.cluster.stats();
       return {
         status: 'connected',
         cluster: health.cluster_name,
         clusterStatus: health.status,
         nodes: health.number_of_nodes,
-        shards: health.active_shards
+        shards: {
+          active: health.active_shards,
+          initializing: health.initializing_shards,
+          unassigned: health.unassigned_shards
+        },
+        performance: {
+          indices: stats.indices,
+          nodes: stats.nodes
+        }
       };
     } catch (error) {
       return { status: 'error', error: (error as Error).message };
+    }
+  }
+
+  // Optimize index settings for better performance
+  async optimizeIndexSettings(indexName: string): Promise<boolean> {
+    try {
+      const client = this.getClient();
+
+      // Check if index exists
+      const exists = await client.indices.exists({ index: indexName });
+      if (!exists) {
+        console.log(`⚠️ Index ${indexName} does not exist, skipping optimization`);
+        return false;
+      }
+
+      // Apply performance optimizations
+      await client.indices.putSettings({
+        index: indexName,
+        body: {
+          settings: {
+            // Cache settings
+            'index.queries.cache.enabled': true,
+            'index.requests.cache.enable': true,
+
+            // Refresh interval - less frequent for better write performance
+            'index.refresh_interval': '30s',
+
+            // Merge settings for better search performance
+            'index.merge.policy.max_merge_at_once': 10,
+            'index.merge.policy.segments_per_tier': 10,
+
+            // Translog settings for durability vs performance balance
+            'index.translog.durability': 'async',
+            'index.translog.flush_threshold_size': '512mb'
+          }
+        }
+      });
+
+      console.log(`✅ Optimized settings for index: ${indexName}`);
+      return true;
+    } catch (error) {
+      console.error(`❌ Failed to optimize index ${indexName}:`, error);
+      return false;
+    }
+  }
+
+  // Get performance statistics
+  async getPerformanceStats(): Promise<any> {
+    try {
+      const client = this.getClient();
+
+      const [clusterHealth, clusterStats, nodesStats] = await Promise.all([
+        client.cluster.health(),
+        client.cluster.stats(),
+        client.nodes.stats({ metric: 'jvm,os,fs,indices' })
+      ]);
+
+      return {
+        cluster: {
+          name: clusterHealth.cluster_name,
+          status: clusterHealth.status,
+          nodes: clusterHealth.number_of_nodes,
+          activeShards: clusterHealth.active_shards
+        },
+        performance: {
+          indices: clusterStats.indices,
+          nodes: clusterStats.nodes,
+          detailedNodes: nodesStats.nodes
+        },
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error('❌ Failed to get performance stats:', error);
+      return { error: (error as Error).message };
     }
   }
 

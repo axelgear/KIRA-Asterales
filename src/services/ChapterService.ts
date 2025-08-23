@@ -7,15 +7,33 @@ import { redisManager } from '../infrastructure/redis.js'
 import { CacheService } from './CacheService.js'
 
 export const ChapterService = {
-	// Main method: Query directly by novelUuid for better efficiency
+	// Main method: Query directly by novelUuid for better efficiency with Redis caching
 	async listChapters(novelUuid: string, from = 0, size = 50) {
 		try {
-			console.log(`🔍 Fetching chapters by UUID: ${novelUuid}, from=${from}, size=${size}`)
-			
+			// Try to get from Redis cache first
+			const cacheKey = `chapter-list:${novelUuid}:${from}:${size}`
+			const cachedResult = await redisManager.get(cacheKey)
+
+			if (cachedResult) {
+				console.log(`✅ Chapter list for ${novelUuid} (from=${from}, size=${size}) loaded from Redis cache`)
+				return cachedResult
+			}
+
+			console.log(`🔍 Chapter list for ${novelUuid} (from=${from}, size=${size}) not in cache, fetching from services`)
+
 			// Use chapter-list single-doc for fastest listing
 			const listResult = await ChapterListSearchService.listByNovel(novelUuid, from, size)
 			if (listResult && listResult.items.length > 0) {
 				console.log(`✅ ChapterListSearchService returned ${listResult.items.length} chapters`)
+
+				// Cache the result for 30 minutes (1800 seconds) - shorter than novels since chapters change more frequently
+				try {
+					await redisManager.set(cacheKey, listResult, 1800)
+					console.log(`💾 Chapter list for ${novelUuid} cached in Redis for 30 minutes`)
+				} catch (cacheError) {
+					console.warn(`⚠️ Failed to cache chapter list for ${novelUuid}:`, cacheError)
+				}
+
 				return listResult
 			} else {
 				console.log(`⚠️ ChapterListSearchService returned empty or no result:`, listResult)
@@ -49,7 +67,10 @@ export const ChapterService = {
 				
 				console.log(`✅ MongoDB query completed in ${queryTime}ms`)
 				console.log(`✅ MongoDB returned ${items.length} chapters, total: ${total}`)
-				
+
+				// Prepare result
+				const result = { items, total, from, size }
+
 				// Log sample data to verify structure
 				if (items.length > 0 && items[0]) {
 					console.log('📋 Sample chapter data:', {
@@ -62,8 +83,16 @@ export const ChapterService = {
 						}
 					})
 				}
-				
-				return { items, total, from, size }
+
+				// Cache the MongoDB result for 30 minutes (1800 seconds)
+				try {
+					await redisManager.set(cacheKey, result, 1800)
+					console.log(`💾 Chapter list for ${novelUuid} (MongoDB fallback) cached in Redis for 30 minutes`)
+				} catch (cacheError) {
+					console.warn(`⚠️ Failed to cache MongoDB fallback result for ${novelUuid}:`, cacheError)
+				}
+
+				return result
 			} catch (queryError) {
 				const queryTime = Date.now() - startTime
 				console.error(`❌ MongoDB query failed after ${queryTime}ms:`, queryError)
@@ -150,9 +179,16 @@ export const ChapterService = {
 			wordCount: params.content.trim().split(/\s+/).length
 		})
 		
+		// Invalidate chapter list cache for the novel
+		try {
+			await this.invalidateChapterListCache(params.novelUuid)
+		} catch (cacheError) {
+			console.warn(`⚠️ Failed to invalidate chapter list cache for novel ${params.novelUuid}:`, cacheError)
+		}
+
 		// Rebuild single-doc list
 		await ChapterListSearchService.rebuildNovel(params.novelUuid, params.novelId)
-		
+
 		// Update novel's chapter info (firstChapter/latestChapter)
 		try {
 			const { NovelService } = await import('./NovelService.js')
@@ -161,7 +197,7 @@ export const ChapterService = {
 		} catch (error) {
 			console.warn(`⚠️ Failed to update novel chapter info for novel ${params.novelId}:`, error)
 		}
-		
+
 		// Cache the new chapter
 		try {
 			const cacheKey = `chapter:${uuid}`
@@ -186,11 +222,20 @@ export const ChapterService = {
 			{ new: true }
 		)
 		
+		// Invalidate chapter list cache for the novel
+		if (updated?.novelUuid) {
+			try {
+				await this.invalidateChapterListCache(updated.novelUuid)
+			} catch (cacheError) {
+				console.warn(`⚠️ Failed to invalidate chapter list cache for novel ${updated.novelUuid}:`, cacheError)
+			}
+		}
+
 		// Rebuild single-doc list
 		if (updated?.novelUuid && updated?.novelId) {
 			await ChapterListSearchService.rebuildNovel(updated.novelUuid, updated.novelId)
 		}
-		
+
 		// Invalidate and recache the updated chapter
 		if (updated?.uuid) {
 			try {
@@ -220,7 +265,16 @@ export const ChapterService = {
 				console.warn(`⚠️ Failed to invalidate deleted chapter cache ${chapter.uuid}:`, cacheError)
 			}
 		}
-		
+
+		// Invalidate chapter list cache for the novel
+		if (chapter?.novelUuid) {
+			try {
+				await this.invalidateChapterListCache(chapter.novelUuid)
+			} catch (cacheError) {
+				console.warn(`⚠️ Failed to invalidate chapter list cache for novel ${chapter.novelUuid}:`, cacheError)
+			}
+		}
+
 		// Rebuild single-doc list
 		if (chapter?.novelUuid && chapter?.novelId) {
 			await ChapterListSearchService.rebuildNovel(chapter.novelUuid, chapter.novelId)
@@ -269,11 +323,76 @@ export const ChapterService = {
 			}
 		}
 		
+		// Invalidate chapter list cache for the novel
+		if (novelUuid) {
+			try {
+				await this.invalidateChapterListCache(novelUuid)
+			} catch (cacheError) {
+				console.warn(`⚠️ Failed to invalidate chapter list cache for novel ${novelUuid}:`, cacheError)
+			}
+		}
+
 		// Rebuild single-doc list
 		if (novelUuid) {
 			await ChapterListSearchService.rebuildNovel(novelUuid, novelId)
 		}
-		
+
 		return { success: true }
+	},
+
+	// Invalidate chapter list cache for a specific novel (useful when chapters are added/updated/deleted)
+	async invalidateChapterListCache(novelUuid: string): Promise<boolean> {
+		try {
+			// Since chapter lists have pagination, we need to delete all cache keys that start with the novel UUID
+			// We'll use a pattern to find and delete all related cache keys
+			const pattern = `chapter-list:${novelUuid}:*`
+			const keys = await CacheService.getCacheKeys(pattern)
+
+			if (keys.length > 0) {
+				let deleted = 0
+				for (const key of keys) {
+					try {
+						const deletedKey = await CacheService.deleteCache(key)
+						if (deletedKey) deleted++
+					} catch (cacheError) {
+						console.warn(`⚠️ Failed to delete cache key ${key}:`, cacheError)
+					}
+				}
+				console.log(`🗑️ Chapter list cache invalidated for novel ${novelUuid}: ${deleted}/${keys.length} keys deleted`)
+				return deleted > 0
+			}
+
+			console.log(`ℹ️ No chapter list cache found for novel ${novelUuid}`)
+			return false
+		} catch (error) {
+			console.error(`❌ Failed to invalidate chapter list cache for novel ${novelUuid}:`, error)
+			return false
+		}
+	},
+
+	// Warm up chapter list cache for frequently accessed novels
+	async warmupChapterListCache(novelUuids: string[], from = 0, size = 50): Promise<number> {
+		try {
+			console.log(`🔥 Warming up chapter list cache for ${novelUuids.length} novels`)
+
+			let cached = 0
+			for (const novelUuid of novelUuids) {
+				try {
+					// This will fetch from services and cache the result
+					const result = await this.listChapters(novelUuid, from, size)
+					if (result && result.items) {
+						cached++
+					}
+				} catch (cacheError) {
+					console.warn(`⚠️ Failed to cache chapter list for novel ${novelUuid}:`, cacheError)
+				}
+			}
+
+			console.log(`✅ Chapter list cache warmed up: ${cached}/${novelUuids.length} novels cached`)
+			return cached
+		} catch (error) {
+			console.error(`❌ Failed to warm up chapter list cache:`, error)
+			return 0
+		}
 	}
 } 
