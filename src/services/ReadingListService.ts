@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { getNextSequence } from '../infrastructure/models/Sequence.js'
 import { ReadingListModel } from '../infrastructure/models/ReadingList.js'
 import { ReadingListItemModel } from '../infrastructure/models/ReadingListItem.js'
+import { NovelModel } from '../infrastructure/models/Novel.js'
 
 export const ReadingListService = {
 	async createList(ownerUserId: number, name: string, description?: string, visibility: 'private' | 'public' | 'unlisted' = 'private') {
@@ -56,6 +57,36 @@ export const ReadingListService = {
 			ReadingListItemModel.find({ listUuid }).sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean(),
 			ReadingListItemModel.countDocuments({ listUuid })
 		])
-		return { items, total }
+
+		// Enrich items with novel details
+		const enrichedItems = await Promise.all(
+			items.map(async (item) => {
+				try {
+					const novel = await NovelModel.findOne({ slug: item.novelSlug })
+						.select("uuid slug title coverImg description status ownerUserId")
+						.lean()
+
+					return {
+						...item,
+						novel: novel || null,
+						// Add fallback fields for backward compatibility
+						novelTitle: novel?.title || 'Unknown Novel',
+						coverImg: novel?.coverImg || '',
+						author: `User ${novel?.ownerUserId || 'Unknown'}`
+					}
+				} catch (error) {
+					console.warn(`⚠️ Failed to enrich reading list item ${item._id}:`, error)
+					return {
+						...item,
+						novel: null,
+						novelTitle: 'Unknown Novel',
+						coverImg: '',
+						author: 'Unknown Author'
+					}
+				}
+			})
+		)
+
+		return { items: enrichedItems, total }
 	}
 } 

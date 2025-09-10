@@ -372,19 +372,7 @@ export const NovelSearchService = {
 		const items = searchResult.hits.hits.map((h: any) => {
 			const source = h._source
 			// Reconstruct nested objects for backward compatibility
-			return {
-				...source,
-				firstChapter: source.firstChapterUuid ? {
-					uuid: source.firstChapterUuid,
-					title: source.firstChapterTitle,
-					sequence: source.firstChapterSequence
-				} : null,
-				latestChapter: source.latestChapterUuid ? {
-					uuid: source.latestChapterUuid,
-					title: source.latestChapterTitle,
-					sequence: source.latestChapterSequence
-				} : null
-			}
+			return source
 		})
 
 		const rawTotal = typeof searchResult.hits.total === 'number' ? searchResult.hits.total : searchResult.hits.total?.value
