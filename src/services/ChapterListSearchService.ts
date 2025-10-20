@@ -160,6 +160,22 @@ export const ChapterListSearchService = {
 		await client.delete({ index: CHAPTER_LIST_INDEX, id: novelUuid })
 	},
 
+	// Get full chapter manifest for a novel (all chapters stored in single ES doc)
+	async getManifestByNovel(novelUuid: string): Promise<{ chapters: any[]; total: number }> {
+		await this.ensureIndex()
+		const client = getElasticsearchClient()
+		try {
+			const res = await client.get({ index: CHAPTER_LIST_INDEX, id: novelUuid })
+			const source: any = (res as any)?._source || {}
+			const chapters = Array.isArray(source.chapters) ? source.chapters : []
+			const total = typeof source.chapterCount === 'number' ? source.chapterCount : chapters.length
+			return { chapters, total }
+		} catch (error) {
+			console.warn(`⚠️ ES manifest not found for novel ${novelUuid}:`, error instanceof Error ? error.message : String(error))
+			return { chapters: [], total: 0 }
+		}
+	},
+
 	// Rebuild all novels' chapter lists (for fixing current indexing issue)
 	async rebuildAllNovels() {
 		await this.ensureIndex()

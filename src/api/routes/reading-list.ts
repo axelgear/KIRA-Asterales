@@ -11,7 +11,7 @@ export default async function readingListRoutes(fastify: FastifyInstance) {
 	fastify.get('/reading-list/public', ReadingListController.publicLists)
 	fastify.post('/reading-list/item/add', { preHandler: [createRbacGuard('both')] }, ReadingListController.addItem)
 	fastify.post('/reading-list/item/remove', { preHandler: [createRbacGuard('both')] }, ReadingListController.removeItem)
-	fastify.get('/reading-list/items', { preHandler: [createRbacGuard('both')] }, ReadingListController.listItems)
+	fastify.get('/reading-list/items', ReadingListController.listItems)
 
 	// Voting routes
 	fastify.post('/reading-list/vote/upvote', { preHandler: [createRbacGuard('both')] }, ReadingListVotingController.upvote)

@@ -32,7 +32,7 @@ export const NovelTaxonomyController = {
 	listTags: async (request: FastifyRequest) => {
 		const q = request.query as any
 		const page = Number(q.page) || 1
-		const pageSize = Math.min(Number(q.pageSize) || 50, 100) // Max 100 per page
+		const pageSize = Math.min(Number(q.pageSize) || 50, 500) // Max 500 per page
 		
 		const result = await NovelTaxonomyService.listTags(page, pageSize)
 		return { success: true, result }
@@ -74,7 +74,7 @@ export const NovelTaxonomyController = {
 	listGenres: async (request: FastifyRequest) => {
 		const q = request.query as any
 		const page = Number(q.page) || 1
-		const pageSize = Math.min(Number(q.pageSize) || 50, 100) // Max 100 per page
+		const pageSize = Math.min(Number(q.pageSize) || 50, 500) // Max 500 per page
 		
 		const result = await NovelTaxonomyService.listGenres(page, pageSize)
 		return { success: true, result }

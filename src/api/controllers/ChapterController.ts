@@ -60,6 +60,15 @@ export const ChapterController = {
 		return { success: true, result }
 	},
 
+	// GET /chapter/manifest?novelUuid=...
+	manifest: async (request: FastifyRequest) => {
+		const q = request.query as any
+		const novelUuid = q.novelUuid
+		if (!novelUuid) return { success: false, message: 'Novel UUID required' }
+		const result = await ChapterService.getChapterManifest(novelUuid)
+		return { success: true, result }
+	},
+
 	// Rebuild Elasticsearch chapter lists (for fixing indexing issues)
 	rebuild: async (request: FastifyRequest) => {
 		try {
@@ -88,6 +97,8 @@ export const ChapterController = {
 		try {
 			const params = request.params as any
 			const uuid = params.uuid
+			const q = request.query as any
+			const includeNeighbors = String(q.includeNeighbors || '').toLowerCase() === 'true'
 			
 			if (!uuid) {
 				return { success: false, message: 'Chapter UUID required' }
@@ -101,10 +112,15 @@ export const ChapterController = {
 				return { success: false, message: 'Chapter not found' }
 			}
 			
+			let payload: any = chapter
+			if (includeNeighbors && chapter?.novelUuid && typeof chapter.sequence === 'number') {
+				const neighbors = await ChapterService.getChapterNeighbors(chapter.novelUuid, chapter.sequence)
+				payload = { ...chapter, neighbors }
+			}
 			return { 
 				success: true, 
 				message: 'Chapter fetched successfully',
-				result: chapter
+				result: payload
 			}
 		} catch (error) {
 			console.error('❌ Error fetching chapter:', error)

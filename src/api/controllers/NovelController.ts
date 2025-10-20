@@ -170,7 +170,19 @@ export const NovelController = {
 		if (q.tagIds != null) params.tagIds = String(q.tagIds).split(',').map(s => Number(s.trim())).filter(n => !isNaN(n))
 		if (q.genreIds != null) params.genreIds = String(q.genreIds).split(',').map(s => Number(s.trim())).filter(n => !isNaN(n))
 		if (q.language != null) params.language = String(q.language)
-		if (q.status != null) params.status = String(q.status)
+		if (q.status != null) {
+			// Normalize status: accept case-insensitive CSV and map to canonical values
+			const raw = String(q.status)
+			const toCanonical = (val: string) => {
+				const v = val.trim().toLowerCase()
+				if (v === 'ongoing' || v === 'on-going') return 'ongoing'
+				if (v === 'completed' || v === 'complete') return 'completed'
+				if (v === 'hiatus' || v === 'paused' || v === 'onhold' || v === 'on-hold') return 'hiatus'
+				return v
+			}
+			const values = raw.split(',').map(toCanonical).filter(Boolean)
+			params.status = values.length <= 1 ? values[0] : values
+		}
 		if (q.approvalStatus != null) params.approvalStatus = String(q.approvalStatus)
 		if (q.source != null) params.source = String(q.source).split(',').map(s => Number(s.trim())).filter(n => !isNaN(n))
 		if (q.from != null) params.from = Number(q.from)
@@ -178,6 +190,8 @@ export const NovelController = {
 		if (q.sort != null) params.sort = q.sort === 'popular' ? 'popular' : 'recent'
 		// Backward-compat: support `order` as alias for sort
 		if (params.sort == null && q.order != null) params.sort = q.order === 'popular' ? 'popular' : 'recent'
+		// Pass-through metric order (e.g., bookmarkcount, views, etc.)
+		if (q.order != null) params.order = String(q.order)
 		if (q.sortDirection != null) params.sortDirection = String(q.sortDirection)
 		if (q.trackTotal != null) params.trackTotal = String(q.trackTotal).toLowerCase() === 'true'
 		

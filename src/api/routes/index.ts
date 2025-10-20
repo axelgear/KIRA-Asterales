@@ -29,6 +29,9 @@ export default async function registerRoutes(fastify: FastifyInstance) {
 	const BrowsingHistoryRoutes = (await import('./browsingHistory.js')).default
 	await fastify.register(BrowsingHistoryRoutes)
 
+	const TranslationRoutes = (await import('./translation.js')).default
+	await fastify.register(TranslationRoutes)
+
 	/*
 	// Example protected routes showing different RBAC patterns with elegant syntax
 	fastify.get('/admin/users', { preHandler: [createAdminGuard('both')] }, async () => {

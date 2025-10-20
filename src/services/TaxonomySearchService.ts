@@ -76,7 +76,7 @@ export const TaxonomySearchService = {
 		})
 	},
 
-	async listTags(page = 1, pageSize = 100) {
+	async listTags(page = 1, pageSize = 500) {
 		try {
 			const client = getElasticsearchClient()
 			const from = (page - 1) * pageSize
@@ -174,7 +174,7 @@ export const TaxonomySearchService = {
 		})
 	},
 
-	async listGenres(page = 1, pageSize = 100) {
+	async listGenres(page = 1, pageSize = 500) {
 		try {
 			const client = getElasticsearchClient()
 			const from = (page - 1) * pageSize

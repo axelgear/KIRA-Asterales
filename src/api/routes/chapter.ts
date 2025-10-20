@@ -5,6 +5,9 @@ import { createRbacGuard } from '../../plugins/rbac.js'
 export default async function chapterRoutes(fastify: FastifyInstance) {
 	// List chapters (public)
 	fastify.get('/chapter/list', ChapterController.list)
+
+	// Get full chapter manifest for a novel (public)
+	fastify.get('/chapter/manifest', ChapterController.manifest)
 	
 	// Get chapter by UUID (public) - with Redis caching
 	fastify.get('/chapter/:uuid', ChapterController.get)

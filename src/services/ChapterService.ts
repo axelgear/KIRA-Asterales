@@ -104,6 +104,30 @@ export const ChapterService = {
 		}
 	},
 
+	// Get previous/next chapter neighbors efficiently using indexed queries
+	async getChapterNeighbors(novelUuid: string, sequence: number) {
+		try {
+			const [prev, next] = await Promise.all([
+				ChapterModel.findOne({ novelUuid, isPublished: true, sequence: { $lt: sequence } })
+					.select('uuid title sequence')
+					.sort({ sequence: -1 })
+					.lean(),
+				ChapterModel.findOne({ novelUuid, isPublished: true, sequence: { $gt: sequence } })
+					.select('uuid title sequence')
+					.sort({ sequence: 1 })
+					.lean()
+			])
+
+			return {
+				previous: prev ? { uuid: prev.uuid, title: prev.title, sequence: prev.sequence } : undefined,
+				next: next ? { uuid: next.uuid, title: next.title, sequence: next.sequence } : undefined
+			}
+		} catch (error) {
+			console.error('❌ Failed to fetch chapter neighbors:', error)
+			return { previous: undefined, next: undefined }
+		}
+	},
+
 	// Force rebuild Elasticsearch index for a specific novel (for troubleshooting)
 	async forceRebuildNovelIndex(novelId: number) {
 		try {
@@ -161,6 +185,44 @@ export const ChapterService = {
 				console.error(`❌ Fallback MongoDB query also failed for chapter ${uuid}:`, fallbackError)
 				return null
 			}
+		}
+	},
+
+	// Fetch full chapter manifest for a novel and cache it
+	async getChapterManifest(novelUuid: string) {
+		try {
+			const cacheKey = `chapter-manifest:${novelUuid}`
+			const cached = await redisManager.get(cacheKey)
+			if (cached) {
+				console.log(`✅ Chapter manifest for ${novelUuid} loaded from Redis cache`)
+				return cached
+			}
+
+			// Try ES single-doc manifest first
+			const { chapters, total } = await ChapterListSearchService.getManifestByNovel(novelUuid)
+			let payload: { items: any[]; total: number }
+			if (chapters.length > 0) {
+				payload = { items: chapters, total }
+			} else {
+				// Fallback to Mongo: fetch all published chapters
+				const items = await ChapterModel.find({ novelUuid, isPublished: true })
+					.select('uuid title sequence publishedAt wordCount isPublished')
+					.sort({ sequence: 1 })
+					.lean()
+				payload = { items, total: items.length }
+			}
+
+			try {
+				await redisManager.set(cacheKey, payload, 1800)
+				console.log(`💾 Chapter manifest for ${novelUuid} cached in Redis for 30 minutes`)
+			} catch (cacheError) {
+				console.warn(`⚠️ Failed to cache chapter manifest for ${novelUuid}:`, cacheError)
+			}
+
+			return payload
+		} catch (error) {
+			console.error('❌ Chapter manifest fetch failed:', error)
+			return { items: [], total: 0 }
 		}
 	},
 

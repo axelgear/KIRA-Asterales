@@ -8,7 +8,7 @@ let novelIndexEnsured = false
 
 // Helper function to generate cache key for search results
 function generateSearchCacheKey(params: any): string {
-	const { q, tagIds, genreIds, language, status, approvalStatus, source, from, size, sort, sortDirection } = params
+    const { q, tagIds, genreIds, language, status, approvalStatus, source, from, size, sort, sortDirection, order } = params
 	const keyData = {
 		q: q || '',
 		tagIds: tagIds?.sort() || [],
@@ -20,7 +20,8 @@ function generateSearchCacheKey(params: any): string {
 		from: from || 0,
 		size: size || 24,
 		sort: sort || 'recent',
-		sortDirection: sortDirection || 'desc'
+        sortDirection: sortDirection || 'desc',
+        order: order || ''
 	}
 	return `novel_search:${JSON.stringify(keyData)}`
 }
@@ -91,6 +92,7 @@ export const NovelSearchService = {
 							views: { type: 'long' },
 							favoritesCount: { type: 'long' },
 							chaptersCount: { type: 'long' },
+							wordCount: { type: 'long' },
 							upvoteCount: { type: 'long' },
 							downvoteCount: { type: 'long' },
 
@@ -162,6 +164,7 @@ export const NovelSearchService = {
 				views: novel.views || 0,
 				favoritesCount: novel.favoritesCount || 0,
 				chaptersCount: novel.chaptersCount || 0,
+				wordCount: novel.wordCount || 0,
 				upvoteCount: novel.upvoteCount || 0,
 				downvoteCount: novel.downvoteCount || 0,
 				source: novel.source,
@@ -266,7 +269,7 @@ export const NovelSearchService = {
 		}
 	},
 
-	async search(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; sortDirection?: 'asc' | 'desc' | 'ASC' | 'DESC' | undefined; trackTotal?: boolean }) {
+    async search(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | string[] | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; order?: string | undefined; sortDirection?: 'asc' | 'desc' | 'ASC' | 'DESC' | undefined; trackTotal?: boolean }) {
 		try {
 			// Check cache first
 			const cacheKey = generateSearchCacheKey(params)
@@ -293,7 +296,7 @@ export const NovelSearchService = {
 						tagIds: params.tagIds,
 						genreIds: params.genreIds,
 						language: params.language,
-						status: params.status
+						status: Array.isArray(params.status) ? params.status.join(',') : params.status
 					},
 					'elasticsearch'
 				).catch((err: Error) => console.warn('Failed to track search term:', err))
@@ -323,9 +326,9 @@ export const NovelSearchService = {
 	},
 
 	// Internal method to perform actual Elasticsearch search
-	async performElasticsearchSearch(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; sortDirection?: 'asc' | 'desc' | 'ASC' | 'DESC' | undefined; trackTotal?: boolean }) {
+    async performElasticsearchSearch(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | string[] | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; order?: string | undefined; sortDirection?: 'asc' | 'desc' | 'ASC' | 'DESC' | undefined; trackTotal?: boolean }) {
 		const client = getElasticsearchClient()
-		const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 24, sort = 'recent', sortDirection, trackTotal = true } = params
+        const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 24, sort = 'recent', order, sortDirection, trackTotal = true } = params
 		const must: any[] = []
 		const should: any[] = []
 		const filter: any[] = []
@@ -339,7 +342,13 @@ export const NovelSearchService = {
 		if (tagIds?.length) filter.push({ terms: { tagIds } })
 		if (genreIds?.length) filter.push({ terms: { genreIds } })
 		if (language && language !== 'all') filter.push({ term: { language } })
-		if (status && status !== 'all') filter.push({ term: { status } })
+		if (status && (Array.isArray(status) ? status.length > 0 : status !== 'all')) {
+			if (Array.isArray(status)) {
+				filter.push({ terms: { status } })
+			} else {
+				filter.push({ term: { status } })
+			}
+		}
 		if (source?.length) filter.push({ terms: { source } })
 
 		// Query (scoring) - improved multi_match with should for better relevance
@@ -351,10 +360,46 @@ export const NovelSearchService = {
 			must.push({ bool: { should, minimum_should_match: 1 } })
 		}
 
-		const dir = (sortDirection ?? 'desc').toString().toLowerCase() === 'asc' ? 'asc' : 'desc'
-		const sortClause = sort === 'popular'
-			? [{ popularityScore: 'desc' }, { updatedAt: dir }]
-			: [{ updatedAt: dir }]
+        const dir = (sortDirection ?? 'desc').toString().toLowerCase() === 'asc' ? 'asc' : 'desc'
+        const metric = (order ?? '').toString().toLowerCase()
+
+        let primarySort: any | null = null
+        switch (metric) {
+			case 'wordcount':
+				primarySort = { wordCount: dir }
+				break
+            case 'bookmarkcount':
+            case 'bookmarks':
+            case 'favorites':
+            case 'favoritescount':
+                primarySort = { favoritesCount: dir }
+                break
+            case 'views':
+            case 'dailyviews':
+            case 'weeklyviews':
+            case 'monthlyviews':
+                primarySort = { views: dir }
+                break
+            case 'upvotes':
+            case 'upvotecount':
+                primarySort = { upvoteCount: dir }
+                break
+            case 'chapters':
+            case 'chaptercount':
+            case 'chapterscount':
+                primarySort = { chaptersCount: dir }
+                break
+            case 'updated':
+            case 'recent':
+                primarySort = { updatedAt: dir }
+                break
+            default:
+                primarySort = null
+        }
+
+        const sortClause = sort === 'popular'
+            ? [primarySort ?? { popularityScore: 'desc' }, { updatedAt: dir }]
+            : [primarySort ?? { updatedAt: dir }]
 
 		const searchResult = await client.search({
 			index: NOVEL_INDEX,
@@ -362,7 +407,7 @@ export const NovelSearchService = {
 			size,
 			request_cache: true,
 			body: {
-				_source: ['novelId', 'uuid', 'slug', 'title', 'coverImg', 'status', 'language', 'description', 'views', 'favoritesCount', 'chaptersCount', 'upvoteCount', 'downvoteCount', 'updatedAt', 'approvalStatus', 'tagIds', 'genreIds', 'firstChapterUuid', 'firstChapterTitle', 'firstChapterSequence', 'latestChapterUuid', 'latestChapterTitle', 'latestChapterSequence'],
+				_source: ['novelId', 'uuid', 'slug', 'title', 'coverImg', 'status', 'language', 'description', 'views', 'favoritesCount', 'chaptersCount', 'wordCount', 'upvoteCount', 'downvoteCount', 'updatedAt', 'approvalStatus', 'tagIds', 'genreIds', 'firstChapterUuid', 'firstChapterTitle', 'firstChapterSequence', 'latestChapterUuid', 'latestChapterTitle', 'latestChapterSequence'],
 				query: must.length ? { bool: { must, filter } } : { bool: { filter } },
 				sort: sortClause,
 				track_total_hits: trackTotal
@@ -394,9 +439,9 @@ export const NovelSearchService = {
 	},
 	
 	// MongoDB fallback search method
-	async searchMongoDB(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined }) {
+    async searchMongoDB(params: { q?: string | undefined; tagIds?: number[] | undefined; genreIds?: number[] | undefined; language?: string | undefined; status?: string | string[] | undefined; approvalStatus?: string | undefined; source?: number[] | undefined; from?: number | undefined; size?: number | undefined; sort?: 'recent' | 'popular' | undefined; order?: string | undefined; sortDirection?: 'asc' | 'desc' | 'ASC' | 'DESC' | undefined }) {
 		try {
-			const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 20, sort = 'recent' } = params
+            const { q, tagIds, genreIds, language, status, approvalStatus, source, from = 0, size = 20, sort = 'recent', order, sortDirection } = params
 			
 			// Build MongoDB query
 			const query: any = {}
@@ -422,16 +467,37 @@ export const NovelSearchService = {
 			if (tagIds?.length) query.tagIds = { $in: tagIds }
 			if (genreIds?.length) query.genreIds = { $in: genreIds }
 			if (language && language !== 'all') query.language = language
-			if (status && status !== 'all') query.status = status
+			if (status && (Array.isArray(status) ? status.length > 0 : status !== 'all')) {
+				if (Array.isArray(status)) {
+					query.status = { $in: status }
+				} else {
+					query.status = status
+				}
+			}
 			if (source?.length) query.source = { $in: source }
 			
-			// Build sort object
-			let sortObj: any = {}
-			if (sort === 'popular') {
-				sortObj = { upvoteCount: -1, favoritesCount: -1, updatedAt: -1 }
-			} else {
-				sortObj = { updatedAt: -1 }
-			}
+            // Build sort object
+            const dir = (sortDirection ?? 'desc') && String(sortDirection).toLowerCase() === 'asc' ? 1 : -1
+            let sortObj: any = {}
+            if (sort === 'popular') {
+                const metric = (order ?? '').toString().toLowerCase()
+                if (['wordcount'].includes(metric)) {
+                    sortObj = { wordCount: dir, updatedAt: dir }
+                } else if (['bookmarkcount', 'bookmarks', 'favorites', 'favoritescount'].includes(metric)) {
+                    sortObj = { favoritesCount: dir, updatedAt: dir }
+                } else if (['views', 'dailyviews', 'weeklyviews', 'monthlyviews'].includes(metric)) {
+                    sortObj = { views: dir, updatedAt: dir }
+                } else if (['upvotes', 'upvotecount'].includes(metric)) {
+                    sortObj = { upvoteCount: dir, updatedAt: dir }
+                } else if (['chapters', 'chaptercount', 'chapterscount'].includes(metric)) {
+                    sortObj = { chaptersCount: dir, updatedAt: dir }
+                } else {
+                    // popularity fallback approximation
+                    sortObj = { upvoteCount: -1, favoritesCount: -1, updatedAt: dir }
+                }
+            } else {
+                sortObj = { updatedAt: dir }
+            }
 			
 			// Execute query with pagination
 			const [items, total] = await Promise.all([

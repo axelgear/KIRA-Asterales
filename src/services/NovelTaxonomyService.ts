@@ -67,7 +67,7 @@ export const NovelTaxonomyService = {
 		return { success: result.deletedCount > 0 }
 	},
 
-	async listTags(page = 1, pageSize = 100) {
+	async listTags(page = 1, pageSize = 500) {
 		try {
 			// Try Redis cache first
 			const cached = await this.getCachedTags(page, pageSize)
@@ -157,7 +157,7 @@ export const NovelTaxonomyService = {
 		return { success: result.deletedCount > 0 }
 	},
 
-	async listGenres(page = 1, pageSize = 100) {
+	async listGenres(page = 1, pageSize = 500) {
 		try {
 			// Try Redis cache first
 			const cached = await this.getCachedGenres(page, pageSize)
