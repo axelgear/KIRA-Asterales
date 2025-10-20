@@ -13,7 +13,7 @@ class RedisManager {
     }
 
     try {
-      console.log('🔴 Connecting to Redis...');
+      console.log('🟡 Connecting to Redis...');
       console.log(`   Host: ${ENV.REDIS_HOST}:${ENV.REDIS_PORT}`);
       
       // Create Redis client with proper options
