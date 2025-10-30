@@ -16,6 +16,7 @@ export interface CreateBrowsingHistoryParams {
 export interface UpdateBrowsingHistoryParams {
   progress?: number;
   device?: string;
+  chapterUuid?: string;
 }
 
 export const BrowsingHistoryService = {
@@ -184,14 +185,32 @@ export const BrowsingHistoryService = {
     updates: UpdateBrowsingHistoryParams
   ) {
     try {
+      const { chapterUuid, ...rest } = updates || {};
+
+      let derivedChapter: { title?: string; sequence?: number } | null = null;
+      if (chapterUuid) {
+        const chapter = await ChapterModel.findOne({ uuid: chapterUuid })
+          .select("title sequence")
+          .lean();
+        if (chapter) {
+          derivedChapter = { title: chapter.title, sequence: chapter.sequence };
+        }
+      }
+
+      const $set: any = {
+        ...rest,
+        lastReadAt: new Date(),
+      };
+      if (chapterUuid) {
+        $set.chapterUuid = chapterUuid;
+        if (derivedChapter?.title) $set.chapterTitle = derivedChapter.title;
+        if (typeof derivedChapter?.sequence === "number")
+          $set.chapterSequence = derivedChapter.sequence as number;
+      }
+
       const history = await BrowsingHistoryModel.findOneAndUpdate(
         { userId, novelSlug },
-        {
-          $set: {
-            ...updates,
-            lastReadAt: new Date(),
-          },
-        },
+        { $set },
         { new: true }
       );
 

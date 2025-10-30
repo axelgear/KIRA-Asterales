@@ -30,7 +30,7 @@ desktop.ini
 src/types/auto-*.d.ts
 
 src/scripts/*
-i18n/
+i8n/
 
 #env
 .env

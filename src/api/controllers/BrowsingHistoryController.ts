@@ -122,7 +122,7 @@ export const BrowsingHistoryController = {
 			const body = request.body as any
 			const cookies: any = (request as any).cookies || {}
 			const userId = Number(cookies?.uid)
-			const { novelSlug, progress, device } = body
+			const { novelSlug, progress, device, chapterUuid } = body
 
 			console.log('🔄 Update history request:', { userId, novelSlug, progress })
 
@@ -137,6 +137,7 @@ export const BrowsingHistoryController = {
 			const updates: any = {}
 			if (progress !== undefined) updates.progress = Number(progress)
 			if (device !== undefined) updates.device = String(device)
+			if (chapterUuid !== undefined) updates.chapterUuid = String(chapterUuid)
 
 			const result = await BrowsingHistoryService.updateHistoryEntry(
 				userId,
