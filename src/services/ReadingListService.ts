@@ -45,7 +45,7 @@ export const ReadingListService = {
 		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: -1 } })
 		return { success: true }
 	},
-	async listItems(listUuid: string, page = 1, pageSize = 50) {
+	async listItems(listUuid: string, currentUserId?: number, page = 1, pageSize = 50) {
 		// Verify the list exists
 		const list = await ReadingListModel.findOne({ uuid: listUuid }).lean()
 		if (!list) {
@@ -87,6 +87,25 @@ export const ReadingListService = {
 			})
 		)
 
-		return { items: enrichedItems, total }
+		// Determine if current user is the owner
+		const isOwner = currentUserId != null && list.ownerUserId === currentUserId
+
+		return { 
+			items: enrichedItems, 
+			total,
+			totalPages: Math.ceil(total / pageSize),
+			page,
+			list: {
+				uuid: list.uuid,
+				name: list.name,
+				description: list.description,
+				visibility: list.visibility,
+				ownerUserId: list.ownerUserId,
+				itemsCount: list.itemsCount,
+				upvoteCount: list.upvoteCount || 0,
+				downvoteCount: list.downvoteCount || 0,
+				isOwner
+			}
+		}
 	}
 } 

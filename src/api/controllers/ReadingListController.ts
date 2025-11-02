@@ -50,7 +50,9 @@ export const ReadingListController = {
 	},
 	listItems: async (request: FastifyRequest) => {
 		const q = request.query as any
-		const data = await ReadingListService.listItems(String(q.listUuid), Number(q.page) || 1, Number(q.pageSize) || 50)
+		const cookies: any = request.cookies || {}
+		const uid = cookies?.uid ? Number(cookies.uid) : undefined
+		const data = await ReadingListService.listItems(String(q.listUuid), uid, Number(q.page) || 1, Number(q.pageSize) || 50)
 		return { success: true, result: data }
 	}
 } 
