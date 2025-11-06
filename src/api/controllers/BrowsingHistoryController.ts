@@ -64,9 +64,9 @@ export const BrowsingHistoryController = {
 
 		console.log('🔍 History entry request:', { userUuid, userId, novelSlug })
 
-		if (!novelSlug) {
-			return { success: false, message: 'Novel slug required' }
-		}
+			if (!novelSlug) {
+				return { success: false, message: 'Novel slug required' }
+			}
 
 		const result = await BrowsingHistoryService.getHistoryEntry(userUuid, novelSlug)
 
@@ -113,13 +113,13 @@ export const BrowsingHistoryController = {
 				return { success: false, message: 'Novel slug and Chapter UUID required' }
 			}
 
-		const result = await BrowsingHistoryService.upsertHistoryEntry({
+			const result = await BrowsingHistoryService.upsertHistoryEntry({
 			userUuid: userUuid,
-			novelSlug: String(novelSlug).trim(),
-			chapterUuid: String(chapterUuid).trim(),
-			progress: progress !== undefined ? Number(progress) : 0,
-			device: device || ''
-		})
+				novelSlug: String(novelSlug).trim(),
+				chapterUuid: String(chapterUuid).trim(),
+				progress: progress !== undefined ? Number(progress) : 0,
+				device: device || ''
+			})
 
 			return {
 				success: true,
