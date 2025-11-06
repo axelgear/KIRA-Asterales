@@ -1,7 +1,7 @@
 import { Schema, model, type InferSchemaType } from 'mongoose'
 
 const BrowsingHistorySchema = new Schema({
-	userId: { type: Number, required: true, index: true },
+	userUuid: { type: String, required: true, index: true }, // Secure UUID field
 	novelSlug: { type: String, required: true, index: true },
 	chapterUuid: { type: String, required: true, index: true },
 	chapterTitle: { type: String, required: true },
@@ -11,10 +11,10 @@ const BrowsingHistorySchema = new Schema({
 	chapterSequence: { type: Number, required: true, index: true }
 }, { timestamps: true, versionKey: false, collection: 'browsing-history' })
 
-// Indexes for efficient queries
-BrowsingHistorySchema.index({ userId: 1, novelSlug: 1 }, { unique: true })
-BrowsingHistorySchema.index({ userId: 1, updatedAt: -1 })
-BrowsingHistorySchema.index({ userId: 1, lastReadAt: -1 })
+// Indexes for efficient queries (using secure userUuid)
+BrowsingHistorySchema.index({ userUuid: 1, novelSlug: 1 }, { unique: true })
+BrowsingHistorySchema.index({ userUuid: 1, updatedAt: -1 })
+BrowsingHistorySchema.index({ userUuid: 1, lastReadAt: -1 })
 BrowsingHistorySchema.index({ novelSlug: 1, updatedAt: -1 })
 
 export type BrowsingHistoryDocument = InferSchemaType<typeof BrowsingHistorySchema>

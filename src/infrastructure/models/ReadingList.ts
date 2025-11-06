@@ -2,7 +2,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose'
 
 const ReadingListSchema = new Schema({
 	uuid: { type: String, required: true, unique: true, index: true },
-	ownerUserId: { type: Number, required: true, index: true },
+	ownerUserUuid: { type: String, required: true, index: true }, // Secure UUID field
 	name: { type: String, required: true, index: true },
 	description: { type: String, default: '' },
 	visibility: { type: String, default: 'private', index: true }, // private | public | unlisted
@@ -12,7 +12,8 @@ const ReadingListSchema = new Schema({
 	downvoteCount: { type: Number, default: 0, required: true, index: true }
 }, { timestamps: true, versionKey: false, collection: 'reading-lists' })
 
-ReadingListSchema.index({ ownerUserId: 1, updatedAt: -1 })
+// Indexes using secure ownerUserUuid
+ReadingListSchema.index({ ownerUserUuid: 1, updatedAt: -1 })
 ReadingListSchema.index({ visibility: 1, updatedAt: -1 })
 ReadingListSchema.index({ upvoteCount: -1, updatedAt: -1 })
 

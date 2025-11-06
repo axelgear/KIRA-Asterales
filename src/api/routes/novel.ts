@@ -9,10 +9,6 @@ export default async function novelRoutes(fastify: FastifyInstance) {
 	fastify.patch('/novel/update', { preHandler: [createRbacGuard('both')] }, NovelController.update)
 	fastify.delete('/novel/delete', { preHandler: [createRbacGuard('both')] }, NovelController.remove)
 
-	// Favorite
-	fastify.post('/novel/favorite/add', { preHandler: [createRbacGuard('both')] }, NovelController.addFavorite)
-	fastify.post('/novel/favorite/remove', { preHandler: [createRbacGuard('both')] }, NovelController.removeFavorite)
-
 	// History
 	fastify.post('/novel/history/upsert', { preHandler: [createRbacGuard('both')] }, NovelController.upsertHistory)
 

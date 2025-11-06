@@ -1,23 +1,31 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
 import { BrowsingHistoryService } from '../../services/BrowsingHistoryService.js'
+import { validateTokenAndGetUserUuid, validateJwtToken } from '../../common/jwtAuth.js'
 
 export const BrowsingHistoryController = {
 	// GET /history/list - Get user's browsing history with pagination
 	list: async (request: FastifyRequest) => {
 		try {
 			const q = request.query as any
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
 			const page = Number(q.page) || 1
 			const limit = Number(q.limit) || 20
 
-			console.log('🔍 Browsing history request:', { userId, page, limit })
-
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
 			}
 
-			const result = await BrowsingHistoryService.getUserHistory(userId, page, limit)
+		// Use userUuid from JWT payload for secure operations
+		const userId = authResult.userId!
+		const userUuid = authResult.userUuid!
+
+		console.log('🔍 Browsing history request:', { userUuid, userId, page, limit })
+
+		const result = await BrowsingHistoryService.getUserHistory(userUuid, page, limit)
 
 			console.log(`📋 History result: ${result.items?.length || 0} items, total: ${result.total}`)
 
@@ -40,21 +48,27 @@ export const BrowsingHistoryController = {
 	entry: async (request: FastifyRequest) => {
 		try {
 			const q = request.query as any
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
 			const novelSlug = String(q.novelSlug || '').trim()
 
-			console.log('🔍 History entry request:', { userId, novelSlug })
-
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
 			}
 
-			if (!novelSlug) {
-				return { success: false, message: 'Novel slug required' }
-			}
+		const userId = authResult.userId!
+		const userUuid = authResult.userUuid!
 
-			const result = await BrowsingHistoryService.getHistoryEntry(userId, novelSlug)
+		console.log('🔍 History entry request:', { userUuid, userId, novelSlug })
+
+		if (!novelSlug) {
+			return { success: false, message: 'Novel slug required' }
+		}
+
+		const result = await BrowsingHistoryService.getHistoryEntry(userUuid, novelSlug)
 
 			if (!result) {
 				return { success: false, message: 'History entry not found' }
@@ -78,28 +92,34 @@ export const BrowsingHistoryController = {
 	// POST /history/upsert - Create or update browsing history entry
 	upsert: async (request: FastifyRequest) => {
 		try {
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
+			}
+
 			const body = request.body as any
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
 			const { novelSlug, chapterUuid, progress, device } = body
 
-			console.log('🔄 Upsert history request:', { userId, novelSlug, chapterUuid, progress })
+			const userId = authResult.userId!
+			const userUuid = authResult.userUuid!
 
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
-			}
+			console.log('🔄 Upsert history request:', { userUuid, userId, novelSlug, chapterUuid, progress, device })
 
 			if (!novelSlug || !chapterUuid) {
 				return { success: false, message: 'Novel slug and Chapter UUID required' }
 			}
 
-			const result = await BrowsingHistoryService.upsertHistoryEntry({
-				userId: userId,
-				novelSlug: String(novelSlug).trim(),
-				chapterUuid: String(chapterUuid).trim(),
-				progress: progress !== undefined ? Number(progress) : 0,
-				device: device || ''
-			})
+		const result = await BrowsingHistoryService.upsertHistoryEntry({
+			userUuid: userUuid,
+			novelSlug: String(novelSlug).trim(),
+			chapterUuid: String(chapterUuid).trim(),
+			progress: progress !== undefined ? Number(progress) : 0,
+			device: device || ''
+		})
 
 			return {
 				success: true,
@@ -120,15 +140,21 @@ export const BrowsingHistoryController = {
 	update: async (request: FastifyRequest) => {
 		try {
 			const body = request.body as any
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
 			const { novelSlug, progress, device, chapterUuid } = body
 
-			console.log('🔄 Update history request:', { userId, novelSlug, progress })
-
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
 			}
+
+			const userId = authResult.userId!
+			const userUuid = authResult.userUuid!
+
+			console.log('🔄 Update history request:', { userUuid, userId, novelSlug, progress })
 
 			if (!novelSlug) {
 				return { success: false, message: 'Novel slug required' }
@@ -140,7 +166,7 @@ export const BrowsingHistoryController = {
 			if (chapterUuid !== undefined) updates.chapterUuid = String(chapterUuid)
 
 			const result = await BrowsingHistoryService.updateHistoryEntry(
-				userId,
+				userUuid,
 				String(novelSlug).trim(),
 				updates
 			)
@@ -168,22 +194,28 @@ export const BrowsingHistoryController = {
 	delete: async (request: FastifyRequest) => {
 		try {
 			const body = request.body as any
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
 			const { novelSlug } = body
 
-			console.log('🗑️ Delete history request:', { userId, novelSlug })
-
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
 			}
+
+			const userId = authResult.userId!
+			const userUuid = authResult.userUuid!
+
+			console.log('🗑️ Delete history request:', { userUuid, userId, novelSlug })
 
 			if (!novelSlug) {
 				return { success: false, message: 'Novel slug required' }
 			}
 
 			const result = await BrowsingHistoryService.deleteHistoryEntry(
-				userId,
+				userUuid,
 				String(novelSlug).trim()
 			)
 
@@ -205,16 +237,21 @@ export const BrowsingHistoryController = {
 	// DELETE /history/clear - Clear all browsing history for a user
 	clear: async (request: FastifyRequest) => {
 		try {
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
-
-			console.log('🗑️ Clear history request:', { userId })
-
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
 			}
 
-			const result = await BrowsingHistoryService.clearUserHistory(userId)
+			const userId = authResult.userId!
+			const userUuid = authResult.userUuid!
+
+			console.log('🗑️ Clear history request:', { userUuid, userId })
+
+			const result = await BrowsingHistoryService.clearUserHistory(userUuid)
 
 			return {
 				success: result.success,
@@ -234,16 +271,21 @@ export const BrowsingHistoryController = {
 	// GET /history/stats - Get reading statistics for a user
 	stats: async (request: FastifyRequest) => {
 		try {
-			const cookies: any = (request as any).cookies || {}
-			const userId = Number(cookies?.uid)
-
-			console.log('📊 History stats request:', { userId })
-
-			if (!userId || userId <= 0) {
-				return { success: false, message: 'User not authenticated' }
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
 			}
 
-			const result = await BrowsingHistoryService.getUserReadingStats(userId)
+			const userId = authResult.userId!
+			const userUuid = authResult.userUuid!
+
+			console.log('📊 History stats request:', { userUuid, userId })
+
+			const result = await BrowsingHistoryService.getUserReadingStats(userUuid)
 
 			return {
 				success: true,

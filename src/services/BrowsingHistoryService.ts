@@ -6,7 +6,7 @@ import { NovelModel } from "../infrastructure/models/Novel.js";
 import { ChapterModel } from "../infrastructure/models/Chapter.js";
 
 export interface CreateBrowsingHistoryParams {
-  userId: number;
+  userUuid: string; // Changed from userId to userUuid for security
   novelSlug: string;
   chapterUuid: string;
   progress?: number;
@@ -21,13 +21,13 @@ export interface UpdateBrowsingHistoryParams {
 
 export const BrowsingHistoryService = {
   // Get user's browsing history with pagination
-  async getUserHistory(userId: number, page = 1, limit = 20) {
+  async getUserHistory(userUuid: string, page = 1, limit = 20) {
     try {
       const skip = (page - 1) * limit;
-      const query = { userId };
+      const query = { userUuid };
 
       console.log(
-        `🔍 Fetching user ${userId} browsing history (page=${page}, limit=${limit})`
+        `🔍 Fetching user ${userUuid} browsing history (page=${page}, limit=${limit})`
       );
 
       const [items, total] = await Promise.all([
@@ -79,12 +79,12 @@ export const BrowsingHistoryService = {
       };
 
       console.log(
-        `✅ Retrieved ${items.length} history items for user ${userId}`
+        `✅ Retrieved ${items.length} history items for user ${userUuid}`
       );
       return result;
     } catch (error) {
       console.error(
-        `❌ Error fetching user ${userId} browsing history:`,
+        `❌ Error fetching user ${userUuid} browsing history:`,
         error
       );
       return {
@@ -100,25 +100,25 @@ export const BrowsingHistoryService = {
   },
 
   // Get specific browsing history entry
-  async getHistoryEntry(userId: number, novelSlug: string) {
+  async getHistoryEntry(userUuid: string, novelSlug: string) {
     try {
-      console.log(`🔍 Fetching history entry ${userId}:${novelSlug}`);
+      console.log(`🔍 Fetching history entry ${userUuid}:${novelSlug}`);
 
       const history = await BrowsingHistoryModel.findOne({
-        userId,
+        userUuid,
         novelSlug,
       }).lean();
 
       if (history) {
-        console.log(`✅ History entry found for ${userId}:${novelSlug}`);
+        console.log(`✅ History entry found for ${userUuid}:${novelSlug}`);
       } else {
-        console.log(`ℹ️ No history entry found for ${userId}:${novelSlug}`);
+        console.log(`ℹ️ No history entry found for ${userUuid}:${novelSlug}`);
       }
 
       return history;
     } catch (error) {
       console.error(
-        `❌ Error fetching history entry ${userId}:${novelSlug}:`,
+        `❌ Error fetching history entry ${userUuid}:${novelSlug}:`,
         error
       );
       return null;
@@ -129,7 +129,7 @@ export const BrowsingHistoryService = {
   async upsertHistoryEntry(params: CreateBrowsingHistoryParams) {
     try {
       const {
-        userId,
+        userUuid,
         novelSlug,
         chapterUuid,
         progress = 0,
@@ -151,7 +151,7 @@ export const BrowsingHistoryService = {
       }
 
       const historyData = {
-        userId,
+        userUuid,
         novelSlug,
         chapterUuid,
         chapterTitle: chapter.title,
@@ -162,7 +162,7 @@ export const BrowsingHistoryService = {
       };
 
       const history = await BrowsingHistoryModel.findOneAndUpdate(
-        { userId, novelSlug },
+        { userUuid, novelSlug },
         { $set: historyData },
         {
           new: true,
@@ -180,7 +180,7 @@ export const BrowsingHistoryService = {
 
   // Update existing browsing history entry
   async updateHistoryEntry(
-    userId: number,
+    userUuid: string,
     novelSlug: string,
     updates: UpdateBrowsingHistoryParams
   ) {
@@ -209,7 +209,7 @@ export const BrowsingHistoryService = {
       }
 
       const history = await BrowsingHistoryModel.findOneAndUpdate(
-        { userId, novelSlug },
+        { userUuid, novelSlug },
         { $set },
         { new: true }
       );
@@ -217,7 +217,7 @@ export const BrowsingHistoryService = {
       return history;
     } catch (error) {
       console.error(
-        `❌ Error updating history entry ${userId}:${novelSlug}:`,
+        `❌ Error updating history entry ${userUuid}:${novelSlug}:`,
         error
       );
       throw error;
@@ -225,10 +225,10 @@ export const BrowsingHistoryService = {
   },
 
   // Delete browsing history entry
-  async deleteHistoryEntry(userId: number, novelSlug: string) {
+  async deleteHistoryEntry(userUuid: string, novelSlug: string) {
     try {
       const result = await BrowsingHistoryModel.deleteOne({
-        userId,
+        userUuid,
         novelSlug,
       });
 
@@ -238,7 +238,7 @@ export const BrowsingHistoryService = {
       };
     } catch (error) {
       console.error(
-        `❌ Error deleting history entry ${userId}:${novelSlug}:`,
+        `❌ Error deleting history entry ${userUuid}:${novelSlug}:`,
         error
       );
       throw error;
@@ -246,27 +246,27 @@ export const BrowsingHistoryService = {
   },
 
   // Clear all browsing history for a user
-  async clearUserHistory(userId: number) {
+  async clearUserHistory(userUuid: string) {
     try {
-      const result = await BrowsingHistoryModel.deleteMany({ userId });
+      const result = await BrowsingHistoryModel.deleteMany({ userUuid });
 
       return {
         success: result.deletedCount > 0,
         deletedCount: result.deletedCount,
       };
     } catch (error) {
-      console.error(`❌ Error clearing history for user ${userId}:`, error);
+      console.error(`❌ Error clearing history for user ${userUuid}:`, error);
       throw error;
     }
   },
 
   // Get reading statistics for a user
-  async getUserReadingStats(userId: number) {
+  async getUserReadingStats(userUuid: string) {
     try {
-      console.log(`📊 Calculating reading stats for user ${userId}`);
+      console.log(`📊 Calculating reading stats for user ${userUuid}`);
 
       const stats = await BrowsingHistoryModel.aggregate([
-        { $match: { userId } },
+        { $match: { userUuid } },
         {
           $group: {
             _id: null,
@@ -301,12 +301,12 @@ export const BrowsingHistoryService = {
             };
 
       console.log(
-        `✅ Reading stats calculated for user ${userId}: ${result.totalNovelsRead} novels, ${result.totalHistoryEntries} entries`
+        `✅ Reading stats calculated for user ${userUuid}: ${result.totalNovelsRead} novels, ${result.totalHistoryEntries} entries`
       );
       return result;
     } catch (error) {
       console.error(
-        `❌ Error getting reading stats for user ${userId}:`,
+        `❌ Error getting reading stats for user ${userUuid}:`,
         error
       );
       return {

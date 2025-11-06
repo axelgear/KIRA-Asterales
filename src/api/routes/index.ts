@@ -29,6 +29,9 @@ export default async function registerRoutes(fastify: FastifyInstance) {
 	const BrowsingHistoryRoutes = (await import('./browsingHistory.js')).default
 	await fastify.register(BrowsingHistoryRoutes)
 
+	const FavoriteRoutes = (await import('./favorite.js')).default
+	await fastify.register(FavoriteRoutes)
+
 	const TranslationRoutes = (await import('./translation.js')).default
 	await fastify.register(TranslationRoutes)
 

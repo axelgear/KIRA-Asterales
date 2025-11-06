@@ -5,47 +5,47 @@ import { ReadingListItemModel } from '../infrastructure/models/ReadingListItem.j
 import { NovelModel } from '../infrastructure/models/Novel.js'
 
 export const ReadingListService = {
-	async createList(ownerUserId: number, name: string, description?: string, visibility: 'private' | 'public' | 'unlisted' = 'private') {
+	async createList(ownerUserUuid: string, name: string, description?: string, visibility: 'private' | 'public' | 'unlisted' = 'private') {
 		const uuid = randomUUID()
-		const doc = await ReadingListModel.create({ uuid, ownerUserId, name, description: description || '', visibility })
+		const doc = await ReadingListModel.create({ uuid, ownerUserUuid, name, description: description || '', visibility })
 		return doc
 	},
-	async updateList(ownerUserId: number, listUuid: string, patch: Partial<{ name: string; description: string; visibility: 'private' | 'public' | 'unlisted'; coverNovelId: number }>) {
-		const updated = await ReadingListModel.findOneAndUpdate({ uuid: listUuid, ownerUserId }, { $set: patch }, { new: true })
+	async updateList(ownerUserUuid: string, listUuid: string, patch: Partial<{ name: string; description: string; visibility: 'private' | 'public' | 'unlisted'; coverNovelId: number }>) {
+		const updated = await ReadingListModel.findOneAndUpdate({ uuid: listUuid, ownerUserUuid }, { $set: patch }, { new: true })
 		return updated
 	},
-	async deleteList(ownerUserId: number, listUuid: string) {
+	async deleteList(ownerUserUuid: string, listUuid: string) {
 		await ReadingListItemModel.deleteMany({ listUuid })
-		await ReadingListModel.deleteOne({ uuid: listUuid, ownerUserId })
+		await ReadingListModel.deleteOne({ uuid: listUuid, ownerUserUuid })
 		return { success: true }
 	},
-	async myLists(ownerUserId: number) {
-		const items = await ReadingListModel.find({ ownerUserId }).sort({ updatedAt: -1 }).lean()
+	async myLists(ownerUserUuid: string) {
+		const items = await ReadingListModel.find({ ownerUserUuid }).sort({ updatedAt: -1 }).lean()
 		return items
 	},
-	async publicLists(ownerUserId?: number) {
+	async publicLists(ownerUserUuid?: string) {
 		const query: any = { visibility: 'public' }
-		if (ownerUserId) query.ownerUserId = ownerUserId
+		if (ownerUserUuid) query.ownerUserUuid = ownerUserUuid
 		const items = await ReadingListModel.find(query).sort({ updatedAt: -1 }).lean()
 		return items
 	},
-	async addItem(ownerUserId: number, listUuid: string, novel: { novelSlug: string; novelUuid: string }) {
+	async addItem(ownerUserUuid: string, listUuid: string, novel: { novelSlug: string; novelUuid: string }) {
 		// Verify ownership
-		const list = await ReadingListModel.findOne({ uuid: listUuid, ownerUserId }).lean()
+		const list = await ReadingListModel.findOne({ uuid: listUuid, ownerUserUuid }).lean()
 		if (!list) throw new Error('List not found')
 		const itemId = await getNextSequence('readingListItemId')
 		await ReadingListItemModel.updateOne({ listUuid, novelSlug: novel.novelSlug }, { $setOnInsert: { itemId, novelUuid: novel.novelUuid } }, { upsert: true })
 		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: 1 } })
 		return { success: true }
 	},
-	async removeItem(ownerUserId: number, listUuid: string, novelSlug: string) {
-		const list = await ReadingListModel.findOne({ uuid: listUuid, ownerUserId }).lean()
+	async removeItem(ownerUserUuid: string, listUuid: string, novelSlug: string) {
+		const list = await ReadingListModel.findOne({ uuid: listUuid, ownerUserUuid }).lean()
 		if (!list) throw new Error('List not found')
 		await ReadingListItemModel.deleteOne({ listUuid, novelSlug })
 		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: -1 } })
 		return { success: true }
 	},
-	async listItems(listUuid: string, currentUserId?: number, page = 1, pageSize = 50) {
+	async listItems(listUuid: string, currentUserUuid?: string, page = 1, pageSize = 50) {
 		// Verify the list exists
 		const list = await ReadingListModel.findOne({ uuid: listUuid }).lean()
 		if (!list) {
@@ -88,7 +88,7 @@ export const ReadingListService = {
 		)
 
 		// Determine if current user is the owner
-		const isOwner = currentUserId != null && list.ownerUserId === currentUserId
+		const isOwner = currentUserUuid != null && list.ownerUserUuid === currentUserUuid
 
 		return { 
 			items: enrichedItems, 
@@ -100,7 +100,7 @@ export const ReadingListService = {
 				name: list.name,
 				description: list.description,
 				visibility: list.visibility,
-				ownerUserId: list.ownerUserId,
+				ownerUserUuid: list.ownerUserUuid,
 				itemsCount: list.itemsCount,
 				upvoteCount: list.upvoteCount || 0,
 				downvoteCount: list.downvoteCount || 0,

@@ -44,22 +44,6 @@ export const NovelController = {
 		return { success: true }
 	},
 
-	// POST /novel/favorite/add
-	addFavorite: async (request: FastifyRequest) => {
-		const body = request.body as any
-		const cookies: any = request.cookies || {}
-		await NovelService.addFavorite(Number(cookies?.uid), Number(body.novelId))
-		return { success: true }
-	},
-
-	// POST /novel/favorite/remove
-	removeFavorite: async (request: FastifyRequest) => {
-		const body = request.body as any
-		const cookies: any = request.cookies || {}
-		await NovelService.removeFavorite(Number(cookies?.uid), Number(body.novelId))
-		return { success: true }
-	},
-
 	// POST /novel/history/upsert
 	upsertHistory: async (request: FastifyRequest) => {
 		const body = request.body as any

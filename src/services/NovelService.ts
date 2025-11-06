@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { NovelModel } from '../infrastructure/models/Novel.js'
 import { ChapterModel } from '../infrastructure/models/Chapter.js'
-import { FavoriteModel } from '../infrastructure/models/Favorite.js'
 import { BrowsingHistoryModel } from '../infrastructure/models/BrowsingHistory.js'
 import { FeedModel } from '../infrastructure/models/Feed.js'
 import { NovelCommentModel } from '../infrastructure/models/NovelComment.js'
@@ -127,7 +126,15 @@ export const NovelService = {
 		// Delete dependent records first (cascading delete)
 		const novel = await NovelModel.findOne({ novelId }).lean()
 		await ChapterModel.deleteMany({ novelId })
-		await FavoriteModel.deleteMany({ novelId })
+		
+		// Clear favorites using FavoriteService
+		try {
+			const { FavoriteService } = await import('./FavoriteService.js');
+			await FavoriteService.clearNovelFavorites(novelId);
+		} catch (error) {
+			console.warn('⚠️ Failed to clear novel favorites:', error);
+		}
+		
 		await BrowsingHistoryModel.deleteMany({ novelId })
 		await NovelCommentModel.deleteMany({ novelId })
 		await FeedModel.deleteMany({ novelId })
@@ -145,24 +152,6 @@ export const NovelService = {
 		// Delete novel
 		await NovelModel.deleteOne({ novelId })
 		await NovelSearchService.deleteNovel(novelId)
-		return { success: true }
-	},
-	async addFavorite(userId: number, novelId: number) {
-		const novel = await NovelModel.findOneAndUpdate({ novelId }, { $inc: { favoritesCount: 1 } }, { new: true })
-		await FavoriteModel.updateOne({ userId, novelId }, { $setOnInsert: { novelUuid: novel?.uuid } }, { upsert: true })
-		if (novel) {
-			await NovelSearchService.indexNovel(novel)
-			await this.invalidateNovelCache(novel.slug)
-		}
-		return { success: true }
-	},
-	async removeFavorite(userId: number, novelId: number) {
-		await FavoriteModel.deleteOne({ userId, novelId })
-		const novel = await NovelModel.findOneAndUpdate({ novelId }, { $inc: { favoritesCount: -1 } }, { new: true })
-		if (novel) {
-			await NovelSearchService.indexNovel(novel)
-			await this.invalidateNovelCache(novel.slug)
-		}
 		return { success: true }
 	},
 	async upsertHistory(userId: number, novelId: number, chapterId: number, progress?: number) {
