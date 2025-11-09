@@ -5,6 +5,7 @@ import { ReadingListModel } from '../infrastructure/models/ReadingList.js'
 import { NovelCommentModel } from '../infrastructure/models/NovelComment.js'
 import { ReadingListCommentModel } from '../infrastructure/models/ReadingListComment.js'
 import { CommentVoteModel } from '../infrastructure/models/CommentVote.js'
+import { UserModel } from '../infrastructure/models/User.js'
 
 type CommentEntityType = 'novel' | 'readingList'
 
@@ -158,9 +159,27 @@ async function createCommentInternal(params: CreateCommentParams, useTransaction
 			await doc.save()
 		}
 
+		const rawComment = doc.toObject?.() ?? doc
+		const userUuid = rawComment.userUuid
+		const sanitizedComment: Record<string, any> = { ...rawComment }
+		delete sanitizedComment._id
+		delete sanitizedComment.userUuid
+
+		const user = await UserModel.findOne({ uuid: userUuid })
+			.select('uuid userId username nickname avatar')
+			.lean()
+		if (user) {
+			sanitizedComment.user = {
+				userId: user.userId ?? undefined,
+				username: user.username ?? undefined,
+				nickname: user.nickname ?? undefined,
+				avatar: user.avatar ?? undefined,
+			}
+		}
+
 		return {
 			success: true,
-			comment: doc.toObject?.() ?? doc,
+			comment: sanitizedComment,
 		}
 	} catch (error) {
 		if (session) {
@@ -240,10 +259,32 @@ export const CommentService = {
 			userVotesMap = new Map(votes.map(vote => [vote.commentId, vote.vote]))
 		}
 
-		const results = items.map(item => ({
-			...item,
-			userVote: userVotesMap.get(item.commentId) ?? 0,
-		}))
+		let userInfoMap = new Map<string, { userId?: number; username?: string; nickname?: string; avatar?: string }>()
+		if (items.length > 0) {
+			const userUuids = Array.from(new Set(items.map(item => item.userUuid).filter(Boolean)))
+			if (userUuids.length > 0) {
+				const users = await UserModel.find({ uuid: { $in: userUuids } })
+					.select('uuid userId username nickname avatar')
+					.lean()
+				userInfoMap = new Map(users.map(user => [user.uuid, {
+					userId: user.userId ?? undefined,
+					username: user.username ?? undefined,
+					nickname: user.nickname ?? undefined,
+					avatar: user.avatar ?? undefined,
+				}]))
+			}
+		}
+
+		const results = items.map(item => {
+			const sanitized = { ...item }
+			delete (sanitized as any)._id
+			delete sanitized.userUuid
+			return {
+				...sanitized,
+				userVote: userVotesMap.get(item.commentId) ?? 0,
+				user: userInfoMap.get(item.userUuid) ?? undefined,
+			}
+		})
 
 		return {
 			success: true,
