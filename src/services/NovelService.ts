@@ -158,86 +158,57 @@ export const NovelService = {
 		await BrowsingHistoryModel.updateOne({ userId, novelId }, { $set: { chapterId, lastReadAt: new Date(), ...(typeof progress === 'number' ? { progress } : {}) } }, { upsert: true })
 		return { success: true }
 	},
-	async addComment(userId: number, novelId: number, content: string, replyToCommentId?: number) {
-		const commentId = await getNextSequence('commentId')
-		// Build threading fields
-		let parentCommentId: number | null = null
-		let rootCommentId: number | null = null
-		let path = ''
-		let depth = 0
-		if (replyToCommentId != null) {
-			const parent = await NovelCommentModel.findOne({ commentId: replyToCommentId, novelId }).lean()
-			if (parent) {
-				parentCommentId = parent.commentId
-				rootCommentId = parent.rootCommentId ?? parent.commentId
-				depth = (parent.depth ?? 0) + 1
-				const segment = String(commentId).padStart(8, '0')
-				path = parent.path ? `${parent.path}/${segment}` : segment
-			} else {
-				// Parent not found; treat as top-level
-				rootCommentId = commentId
-				path = String(commentId).padStart(8, '0')
-			}
-		} else {
-			rootCommentId = commentId
-			path = String(commentId).padStart(8, '0')
-		}
-		const doc = await NovelCommentModel.create({ commentId, userId, novelId, content, parentCommentId, rootCommentId, path, depth })
-		await FeedModel.create({ feedId: await getNextSequence('feedId'), action: 'comment', userId, novelId, payload: { commentId } })
-		return doc
+	async getNovelUuidById(novelId: number) {
+		const novel = await NovelModel.findOne({ novelId }).select('uuid').lean()
+		return novel?.uuid ?? null
 	},
-	async likeNovel(novelId: number, delta: 1 | -1) {
-		const novel = await NovelModel.findOneAndUpdate({ novelId }, { $inc: delta === 1 ? { upvoteCount: 1 } : { downvoteCount: 1 } }, { new: true })
-		if (novel) {
+	async likeNovel(novelUuid: string, action: 'like' | 'dislike' | 'unlike' | 'undislike') {
+		const actionMap: Record<'like' | 'dislike' | 'unlike' | 'undislike', any> = {
+			like: { $inc: { upvoteCount: 1 } },
+			dislike: { $inc: { downvoteCount: 1 } },
+			unlike: { $inc: { upvoteCount: -1 } },
+			undislike: { $inc: { downvoteCount: -1 } },
+		}
+
+		const update = actionMap[action]
+		if (!novelUuid || !update) {
+			return { success: false, message: 'Invalid like/dislike action' }
+		}
+
+		let novel = await NovelModel.findOneAndUpdate({ uuid: novelUuid }, update, { new: true })
+
+		if (!novel) {
+			return { success: false, message: 'Novel not found' }
+		}
+
+		// Prevent negative counts due to repeated removals
+		const corrections: Record<string, number> = {}
+		if ((novel.upvoteCount ?? 0) < 0) {
+			corrections.upvoteCount = 0
+		}
+		if ((novel.downvoteCount ?? 0) < 0) {
+			corrections.downvoteCount = 0
+		}
+		if (Object.keys(corrections).length > 0) {
+			novel = await NovelModel.findOneAndUpdate(
+				{ uuid: novelUuid },
+				{ $set: corrections },
+				{ new: true }
+			) ?? novel
+		}
+
 			await NovelSearchService.indexNovel(novel)
 			await this.invalidateNovelCache(novel.slug)
+
+		return {
+			success: true,
+			upvoteCount: novel.upvoteCount ?? 0,
+			downvoteCount: novel.downvoteCount ?? 0,
 		}
-		return { success: true }
-	},
-	async likeComment(commentId: number, delta: 1 | -1) {
-		await NovelCommentModel.updateOne({ commentId }, { $inc: delta === 1 ? { upvoteCount: 1 } : { downvoteCount: 1 } })
-		return { success: true }
 	},
 	async search(params: Parameters<typeof NovelSearchService.search>[0]) {
 		await NovelSearchService.ensureIndex()
 		return await NovelSearchService.search(params)
-	},
-	// Comment moderation methods
-	async listComments(params: { novelId?: number; page?: number; pageSize?: number; includeDeleted?: boolean }) {
-		const { novelId, page = 1, pageSize = 50, includeDeleted = false } = params
-		const skip = (page - 1) * pageSize
-		
-		const query: any = {}
-		if (novelId) query.novelId = novelId
-		if (!includeDeleted) query.isDeleted = false
-		
-		const [items, total] = await Promise.all([
-			NovelCommentModel.find(query)
-				.sort({ createdAt: -1 })
-				.skip(skip)
-				.limit(pageSize)
-				.lean(),
-			NovelCommentModel.countDocuments(query)
-		])
-		
-		return { items, total, page, pageSize }
-	},
-	async deleteComment(commentId: number) {
-		const result = await NovelCommentModel.updateOne(
-			{ commentId },
-			{ $set: { isDeleted: true } }
-		)
-		return { success: result.modifiedCount > 0 }
-	},
-	async restoreComment(commentId: number) {
-		const result = await NovelCommentModel.updateOne(
-			{ commentId },
-			{ $set: { isDeleted: false } }
-		)
-		return { success: result.modifiedCount > 0 }
-	},
-	async getComment(commentId: number) {
-		return await NovelCommentModel.findOne({ commentId }).lean()
 	},
 
 	// Populate firstChapter and latestChapter for a novel

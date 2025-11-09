@@ -52,14 +52,6 @@ export const NovelController = {
 		return { success: true }
 	},
 
-	// POST /novel/comment/add
-	addComment: async (request: FastifyRequest) => {
-		const body = request.body as any
-		const cookies: any = request.cookies || {}
-		const c = await NovelService.addComment(Number(cookies?.uid), Number(body.novelId), body.content, body.replyToCommentId)
-		return { success: true, result: { commentId: c.commentId } }
-	},
-
 	// POST /novel/populate-chapters - Populate chapter info for a specific novel (admin only)
 	populateChapterInfo: async (request: FastifyRequest) => {
 		try {
@@ -135,15 +127,25 @@ export const NovelController = {
 	// POST /novel/like | /novel/dislike
 	likeNovel: async (request: FastifyRequest) => {
 		const body = request.body as any
-		await NovelService.likeNovel(Number(body.novelId), body.action === 'like' ? 1 : -1)
-		return { success: true }
-	},
+		const actionRaw = String(body?.action || '').toLowerCase()
+		const validActions = ['like', 'dislike', 'unlike', 'undislike'] as const
+		if (!validActions.includes(actionRaw as (typeof validActions)[number])) {
+			return { success: false, message: 'Invalid action' }
+		}
 
-	// POST /novel/comment/like | /novel/comment/dislike
-	likeComment: async (request: FastifyRequest) => {
-		const body = request.body as any
-		await NovelService.likeComment(Number(body.commentId), body.action === 'like' ? 1 : -1)
-		return { success: true }
+		let novelUuid = typeof body?.novelUuid === 'string' ? body.novelUuid.trim() : ''
+
+		if (!novelUuid && body?.novelId != null) {
+			const fallback = await NovelService.getNovelUuidById(Number(body.novelId))
+			if (fallback) novelUuid = fallback
+		}
+
+		if (!novelUuid) {
+			return { success: false, message: 'novelUuid required' }
+		}
+
+		const result = await NovelService.likeNovel(novelUuid, actionRaw as 'like' | 'dislike' | 'unlike' | 'undislike')
+		return result
 	},
 
 	// GET /novel/search
@@ -183,40 +185,6 @@ export const NovelController = {
 		const result = await NovelService.search(params)
 		//console.log('📊 Search result:', result)
 		return { success: true, result }
-	},
-
-	// Comment moderation endpoints
-	// GET /novel/comments
-	listComments: async (request: FastifyRequest) => {
-		const q = request.query as any
-		const params: any = {}
-		if (q.novelId != null) params.novelId = Number(q.novelId)
-		if (q.page != null) params.page = Number(q.page)
-		if (q.pageSize != null) params.pageSize = Number(q.pageSize)
-		if (q.includeDeleted != null) params.includeDeleted = q.includeDeleted === 'true'
-		const result = await NovelService.listComments(params)
-		return { success: true, result }
-	},
-
-	// POST /novel/comment/delete
-	deleteComment: async (request: FastifyRequest) => {
-		const body = request.body as any
-		const result = await NovelService.deleteComment(Number(body.commentId))
-		return { success: result.success }
-	},
-
-	// POST /novel/comment/restore
-	restoreComment: async (request: FastifyRequest) => {
-		const body = request.body as any
-		const result = await NovelService.restoreComment(Number(body.commentId))
-		return { success: result.success }
-	},
-
-	// GET /novel/comment/:commentId
-	getComment: async (request: FastifyRequest) => {
-		const params = request.params as any
-		const comment = await NovelService.getComment(Number(params.commentId))
-		return { success: true, result: comment }
 	},
 
 	// POST /novel/cache/clear - Clear search cache (admin only)
@@ -391,18 +359,5 @@ export const NovelController = {
 				error: error instanceof Error ? error.message : String(error)
 			}
 		}
-	},
-
-	// Public endpoint for listing novel comments
-	// GET /novel/:novelId/comments
-	listNovelComments: async (request: FastifyRequest) => {
-		const params = request.params as any
-		const q = request.query as any
-		const queryParams: any = { novelId: Number(params.novelId) }
-		if (q.page != null) queryParams.page = Number(q.page)
-		if (q.pageSize != null) queryParams.pageSize = Number(q.pageSize)
-		queryParams.includeDeleted = false // Public endpoint never shows deleted comments
-		const result = await NovelService.listComments(queryParams)
-		return { success: true, result }
 	}
 } 

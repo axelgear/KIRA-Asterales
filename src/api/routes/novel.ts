@@ -12,14 +12,9 @@ export default async function novelRoutes(fastify: FastifyInstance) {
 	// History
 	fastify.post('/novel/history/upsert', { preHandler: [createRbacGuard('both')] }, NovelController.upsertHistory)
 
-	// Comment
-	fastify.post('/novel/comment/add', { preHandler: [createRbacGuard('both')] }, NovelController.addComment)
-
 	// Like/Dislike
 	fastify.post('/novel/like', { preHandler: [createRbacGuard('both')] }, NovelController.likeNovel)
 	fastify.post('/novel/dislike', { preHandler: [createRbacGuard('both')] }, NovelController.likeNovel)
-	fastify.post('/novel/comment/like', { preHandler: [createRbacGuard('both')] }, NovelController.likeComment)
-	fastify.post('/novel/comment/dislike', { preHandler: [createRbacGuard('both')] }, NovelController.likeComment)
 
 	// Search
 	fastify.get('/novel/search', NovelController.search)
@@ -42,12 +37,4 @@ export default async function novelRoutes(fastify: FastifyInstance) {
 	// Search terms cleanup (admin only)
 	fastify.post('/novel/search/cleanup', NovelController.cleanupSearchTerms)
 
-	// Comment moderation routes
-	fastify.get('/novel/comments', { preHandler: [createRbacGuard('both')] }, NovelController.listComments)
-	fastify.post('/novel/comment/delete', { preHandler: [createRbacGuard('both')] }, NovelController.deleteComment)
-	fastify.post('/novel/comment/restore', { preHandler: [createRbacGuard('both')] }, NovelController.restoreComment)
-	fastify.get('/novel/comment/:commentId', { preHandler: [createRbacGuard('both')] }, NovelController.getComment)
-
-	// Public novel comments route (no RBAC protection)
-	fastify.get('/novel/:novelId/comments', NovelController.listNovelComments)
 } 

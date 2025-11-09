@@ -65,7 +65,7 @@ export const checkUserByRbac = async (params: CheckUserRbacParams): Promise<Chec
     }).lean()
 
     const hasPermission = rolesWithPermissions.some(role => 
-      role.apiPathPermissions && role.apiPathPermissions.includes(cleanApiPath as string)
+      role.apiPathPermissions && role.apiPathPermissions.some(permissionPath => matchesApiPath(permissionPath, cleanApiPath))
     )
 
     if (hasPermission) {
@@ -78,6 +78,27 @@ export const checkUserByRbac = async (params: CheckUserRbacParams): Promise<Chec
     console.error('ERROR', 'User RBAC authorization error:', error)
     return { status: 500, message: 'User RBAC authorization error' }
   }
+}
+
+function matchesApiPath(permissionPath: string, requestPath: string) {
+  if (!permissionPath) return false
+  const cleanPermission = permissionPath.split('?')[0] || permissionPath
+
+  if (cleanPermission === requestPath) return true
+
+  const permissionSegments = cleanPermission.split('/')
+  const requestSegments = requestPath.split('/')
+
+  if (permissionSegments.length !== requestSegments.length) return false
+
+  return permissionSegments.every((segment, index) => {
+    const requestSegment = requestSegments[index] ?? ''
+    if (!segment) return segment === requestSegment
+    if (segment.startsWith(':')) {
+      return requestSegment.length > 0
+    }
+    return segment === requestSegment
+  })
 }
 
 /**
