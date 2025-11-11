@@ -10,6 +10,9 @@ export default async function userRoutes(fastify: FastifyInstance) {
 	fastify.post('/user/requestSendVerificationCode', UserController.requestSendVerificationCode)
 	fastify.get('/user/logout', UserController.logout)
 	fastify.post('/user/self', UserController.self)
+	fastify.get('/user/oauth/:provider', UserController.oauthStart)
+	fastify.get('/user/oauth/:provider/callback', UserController.oauthCallback)
+	fastify.get('/user/oauth/providers', UserController.oauthProviders)
 	
 	// User routes (RBAC protected with elegant syntax)
 	fastify.post('/user/update/info', { preHandler: [createRbacGuard('both')] }, UserController.updateInfo)

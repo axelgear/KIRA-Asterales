@@ -52,7 +52,7 @@ UserSchema.index({ email: 1, username: 1 })
 UserSchema.index({ roles: 1 })
 UserSchema.index({ createdAt: -1 })
 UserSchema.index({ isBlocked: 1 })
-UserSchema.index({ 'oauthAccounts.provider': 1, 'oauthAccounts.providerId': 1 }, { sparse: true })
+UserSchema.index({ 'oauthAccounts.provider': 1, 'oauthAccounts.providerId': 1 }, { unique: true, sparse: true })
 
 export type UserDocument = InferSchemaType<typeof UserSchema>
 export const UserModel = model('user', UserSchema) 

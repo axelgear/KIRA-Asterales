@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
-import { userService } from '../../services/UserService.js'
+import crypto from 'crypto'
+import { userService, type OAuthProfile } from '../../services/UserService.js'
 import { ENV } from '../../config/environment.js'
 
 function setCookies(reply: FastifyReply, data: { token: string; email?: string; uid: number; uuid: string }) {
@@ -26,6 +27,198 @@ function clearCookies(reply: FastifyReply) {
 	reply.clearCookie('uuid', opt)
 }
 
+const OAUTH_STATE_COOKIE = 'oauth_state'
+const OAUTH_RETURN_COOKIE = 'oauth_return'
+const OAUTH_PROVIDERS = ['google', 'discord', 'yandex'] as const
+type OAuthProvider = typeof OAUTH_PROVIDERS[number]
+
+type ProviderConfig = {
+	authUrl: string
+	tokenUrl: string
+	userInfoUrl: string
+	scope: string
+	clientId?: string | null
+	clientSecret?: string | null
+	redirectUri?: string | null
+}
+
+const PROVIDER_CONFIG: Record<OAuthProvider, ProviderConfig> = {
+	google: {
+		authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+		tokenUrl: 'https://oauth2.googleapis.com/token',
+		userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+		scope: 'openid email profile',
+		clientId: ENV.GOOGLE_CLIENT_ID ?? null,
+		clientSecret: ENV.GOOGLE_CLIENT_SECRET ?? null,
+		redirectUri: ENV.GOOGLE_REDIRECT_URI ?? null,
+	},
+	discord: {
+		authUrl: 'https://discord.com/api/oauth2/authorize',
+		tokenUrl: 'https://discord.com/api/oauth2/token',
+		userInfoUrl: 'https://discord.com/api/users/@me',
+		scope: 'identify email',
+		clientId: ENV.DISCORD_CLIENT_ID ?? null,
+		clientSecret: ENV.DISCORD_CLIENT_SECRET ?? null,
+		redirectUri: ENV.DISCORD_REDIRECT_URI ?? null,
+	},
+	yandex: {
+		authUrl: 'https://oauth.yandex.com/authorize',
+		tokenUrl: 'https://oauth.yandex.com/token',
+		userInfoUrl: 'https://login.yandex.ru/info?format=json',
+		scope: 'login:email login:info',
+		clientId: ENV.YANDEX_CLIENT_ID ?? null,
+		clientSecret: ENV.YANDEX_CLIENT_SECRET ?? null,
+		redirectUri: ENV.YANDEX_REDIRECT_URI ?? null,
+	},
+}
+
+const FRONTEND_BASES = (ENV.FRONTEND_URL || '')
+	.split(',')
+	.map(base => base.trim())
+	.filter(Boolean)
+const DEFAULT_FRONTEND_URL = FRONTEND_BASES[0] || 'http://localhost:3000/'
+
+function isProviderConfigured(provider: OAuthProvider) {
+	const config = PROVIDER_CONFIG[provider]
+	return Boolean(config.clientId && config.clientSecret)
+}
+
+function buildState() {
+	return crypto.randomBytes(32).toString('hex')
+}
+
+function allowedReturnUrl(url?: string) {
+	if (!url) return undefined
+	try {
+		const parsed = new URL(url)
+		const allowed = FRONTEND_BASES.some(base => {
+			try {
+				return new URL(base).hostname === parsed.hostname
+			} catch {
+				return false
+			}
+		})
+		return allowed ? parsed.toString() : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function getDefaultRedirect(path = '/', params: Record<string, string | undefined> = {}) {
+	const url = new URL(path, DEFAULT_FRONTEND_URL)
+	Object.entries(params).forEach(([key, value]) => {
+		if (value !== undefined) url.searchParams.set(key, value)
+	})
+	return url.toString()
+}
+
+function buildRedirect(returnUrl: string | undefined, fallbackPath: string, params: Record<string, string | undefined> = {}) {
+	const sanitized = allowedReturnUrl(returnUrl)
+	if (sanitized) {
+		const url = new URL(sanitized)
+		Object.entries(params).forEach(([key, value]) => {
+			if (value !== undefined) url.searchParams.set(key, value)
+		})
+		return url.toString()
+	}
+	return getDefaultRedirect(fallbackPath, params)
+}
+
+function getRedirectUri(provider: OAuthProvider, request: FastifyRequest) {
+	const config = PROVIDER_CONFIG[provider]
+	if (config.redirectUri) return config.redirectUri
+	const forwardedProto = (request.headers['x-forwarded-proto'] as string) || request.protocol
+	const forwardedHost = (request.headers['x-forwarded-host'] as string) || request.headers.host || ''
+	const base = `${forwardedProto}://${forwardedHost}`
+	const defaultPath = {
+		google: '/user/oauth/google/callback',
+		discord: '/user/oauth/discord/callback',
+		yandex: '/user/oauth/yandex/callback',
+	} as const
+	return `${base}${defaultPath[provider]}`
+}
+
+function buildOAuthUrl(provider: OAuthProvider, state: string, request: FastifyRequest) {
+	const config = PROVIDER_CONFIG[provider]
+	const redirectUri = getRedirectUri(provider, request)
+	const params = new URLSearchParams({
+		client_id: config.clientId || '',
+		redirect_uri: redirectUri,
+		response_type: 'code',
+		scope: config.scope,
+		state,
+	})
+	if (provider === 'google') {
+		params.set('access_type', 'offline')
+		params.set('include_granted_scopes', 'true')
+	}
+	return `${config.authUrl}?${params.toString()}`
+}
+
+async function exchangeCodeForToken(provider: OAuthProvider, code: string, request: FastifyRequest) {
+	const config = PROVIDER_CONFIG[provider]
+	const redirectUri = getRedirectUri(provider, request)
+	const body = new URLSearchParams({
+		client_id: config.clientId || '',
+		client_secret: config.clientSecret || '',
+		code,
+		grant_type: 'authorization_code',
+		redirect_uri: redirectUri,
+	})
+	const response = await fetch(config.tokenUrl, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body,
+	})
+	if (!response.ok) {
+		throw new Error(`Failed to exchange code for token: ${response.status}`)
+	}
+	return response.json() as Promise<Record<string, any>>
+}
+
+async function fetchOAuthProfile(provider: OAuthProvider, accessToken: string) {
+	const config = PROVIDER_CONFIG[provider]
+	const headers =
+		provider === 'yandex'
+			? { Authorization: `OAuth ${accessToken}` }
+			: { Authorization: `Bearer ${accessToken}` }
+	const response = await fetch(config.userInfoUrl, { headers })
+	if (!response.ok) {
+		throw new Error(`Failed to fetch ${provider} user profile`)
+	}
+	return response.json() as Promise<Record<string, any>>
+}
+
+function mapOAuthProfile(provider: OAuthProvider, raw: any): OAuthProfile {
+	switch (provider) {
+		case 'google':
+			return {
+				provider,
+				providerId: raw.id ?? raw.sub,
+				...(raw.email ? { email: raw.email } : {}),
+				...(raw.name ? { name: raw.name } : raw.email ? { name: raw.email } : {}),
+				...(raw.picture ? { avatar: raw.picture } : {}),
+			}
+		case 'discord':
+			return {
+				provider,
+				providerId: raw.id,
+				...(raw.email ? { email: raw.email } : {}),
+				...(raw.global_name || raw.username ? { name: raw.global_name || raw.username } : {}),
+				...(raw.avatar ? { avatar: `https://cdn.discordapp.com/avatars/${raw.id}/${raw.avatar}.png` } : {}),
+			}
+		case 'yandex':
+			return {
+				provider,
+				providerId: raw.id || raw.login,
+				...(raw.default_email ? { email: raw.default_email } : {}),
+				...(raw.real_name || raw.display_name || raw.login ? { name: raw.real_name || raw.display_name || raw.login } : {}),
+				...(raw.default_avatar_id ? { avatar: `https://avatars.yandex.net/get-yapic/${raw.default_avatar_id}/islands-200` } : {}),
+			}
+		default:
+			throw new Error(`Unsupported provider: ${provider}`)
+	}
+}
 async function resolveAuthContext(request: FastifyRequest) {
 	const cookies: any = request.cookies || {}
 	const token = cookies?.token as string | undefined
@@ -64,12 +257,12 @@ export const UserController = {
 			return { success: true, email: result.user.email, UUID: result.user.uuid, uid: result.user.userId, token: result.token, passwordHint: '', message: 'OK' }
 		} catch (error: any) {
 			if (error?.message === 'TOTP_REQUIRED') {
-				return reply.code(401).send({ success: false, message: 'totp_required', requireTotp: true })
+				return { success: false, message: 'totp_required', requireTotp: true }
 			}
 			if (error?.message === 'INVALID_TOTP') {
-				return reply.code(401).send({ success: false, message: 'invalid_totp', requireTotp: true })
+				return { success: false, message: 'invalid_totp', requireTotp: true }
 			}
-			return reply.code(401).send({ success: false, message: 'Email or password incorrect' })
+			return { success: false, message: 'Email or password incorrect' }
 		}
 	},
 
@@ -96,6 +289,104 @@ export const UserController = {
 		return { success: true, message: 'OK' }
 	},
 
+	// GET /user/oauth/:provider - start OAuth login
+	oauthStart: async (request: FastifyRequest, reply: FastifyReply) => {
+		const providerParam = (request.params as any)?.provider as string
+		const provider = OAUTH_PROVIDERS.find(item => item === providerParam)
+		if (!provider) return reply.code(400).send({ success: false, message: 'Unsupported provider' })
+		if (!isProviderConfigured(provider)) return reply.code(503).send({ success: false, message: `${provider} oauth not configured` })
+
+		const { returnUrl } = request.query as { returnUrl?: string }
+		const sanitizedReturn = allowedReturnUrl(returnUrl)
+		const state = buildState()
+		const authUrl = buildOAuthUrl(provider, state, request)
+
+		const cookieOptions = {
+			httpOnly: true,
+			secure: request.protocol === 'https' || process.env.NODE_ENV === 'production',
+			sameSite: 'lax' as const,
+			path: '/',
+			maxAge: 600,
+		}
+
+		reply.setCookie(OAUTH_STATE_COOKIE, state, cookieOptions)
+		if (sanitizedReturn) {
+			reply.setCookie(OAUTH_RETURN_COOKIE, sanitizedReturn, cookieOptions)
+		}
+
+		return reply.redirect(authUrl)
+	},
+
+	// GET /user/oauth/:provider/callback - OAuth callback
+	oauthCallback: async (request: FastifyRequest, reply: FastifyReply) => {
+		const providerParam = (request.params as any)?.provider as string
+		const provider = OAUTH_PROVIDERS.find(item => item === providerParam)
+		if (!provider) return reply.redirect(getDefaultRedirect('/auth/error', { oauth: 'unsupported_provider' }))
+
+		const storedReturnUrl = request.cookies[OAUTH_RETURN_COOKIE]
+		const clearOAuthCookies = () => {
+			reply.clearCookie(OAUTH_STATE_COOKIE, { path: '/' })
+			reply.clearCookie(OAUTH_RETURN_COOKIE, { path: '/' })
+		}
+
+		try {
+			if (!isProviderConfigured(provider)) {
+				clearOAuthCookies()
+				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'provider_not_configured', provider }))
+			}
+
+			const { code, state, error } = request.query as Record<string, string | undefined>
+			const storedState = request.cookies[OAUTH_STATE_COOKIE]
+
+			if (error) {
+				clearOAuthCookies()
+				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: error, provider }))
+			}
+			if (!code) {
+				clearOAuthCookies()
+				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'no_code', provider }))
+			}
+			if (!state || !storedState || state !== storedState) {
+				clearOAuthCookies()
+				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'invalid_state', provider }))
+			}
+
+			clearOAuthCookies()
+
+			const tokenData = await exchangeCodeForToken(provider, code, request)
+			const accessToken = tokenData.access_token
+			if (!accessToken) throw new Error('Missing access token')
+
+			const rawProfile = await fetchOAuthProfile(provider, accessToken)
+			const profile = mapOAuthProfile(provider, rawProfile)
+			const result = await userService.handleOAuthLogin(profile)
+
+			setCookies(reply, {
+				token: result.token,
+				email: result.user.email,
+				uid: result.user.userId,
+				uuid: result.user.uuid,
+			})
+
+			return reply.redirect(buildRedirect(storedReturnUrl, '/', {
+				oauth: 'success',
+				provider,
+				new: result.isNewUser ? '1' : undefined,
+			}))
+		} catch (reason: any) {
+			console.error(`${providerParam} oauth callback error:`, reason)
+			clearOAuthCookies()
+			return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'internal_error', provider }))
+		}
+	},
+
+	oauthProviders: async () => {
+		const available = Object.fromEntries(
+			OAUTH_PROVIDERS.map(provider => [provider, isProviderConfigured(provider)])
+		) as Record<OAuthProvider, boolean>
+		return { success: true, available }
+	},
+
 	// POST /user/self - RBAC protected via preHandler
 	self: async (request: FastifyRequest) => {
 		const body = (request.body as any) || {}
@@ -120,7 +411,8 @@ export const UserController = {
 					avatar: (user as any).avatar || '',
 					gender: (user as any).gender || '',
 					signature: (user as any).bio || '',
-					label: (user as any).label || []
+					label: (user as any).label || [],
+					authenticatorType: (user as any).twoFactorType || (user as any).authenticatorType || 'none'
 				}
 			}
 		} catch {
@@ -186,7 +478,7 @@ export const UserController = {
 	confirmTotp: async (request: FastifyRequest) => {
 		try {
 			const { uid } = await resolveAuthContext(request)
-			const { clientOtp } = (request.body as any) || {}
+		const { clientOtp } = (request.body as any) || {}
 			if (!clientOtp) {
 				return { success: false, message: 'TOTP code required' }
 			}
@@ -345,13 +637,13 @@ export const UserController = {
 	deleteTotpByCode: async (request: FastifyRequest) => {
 		try {
 			const { uid } = await resolveAuthContext(request)
-			const body = request.body as any
-			const { clientOtp, passwordHash } = body
-			
-			if (!clientOtp || !passwordHash) {
-				return { success: false, message: 'TOTP code and password required' }
-			}
-			
+		const body = request.body as any
+		const { clientOtp, passwordHash } = body
+		
+		if (!clientOtp || !passwordHash) {
+			return { success: false, message: 'TOTP code and password required' }
+		}
+		
 			await userService.deleteTotp(uid, passwordHash, clientOtp)
 			return { success: true, isCoolingDown: false }
 		} catch (error: any) {

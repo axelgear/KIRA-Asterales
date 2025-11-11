@@ -29,6 +29,8 @@ export type OAuthProfile = {
 	avatar?: string
 }
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 function generateNumericCode(length = 6): string {
 	const min = 10 ** (length - 1)
 	const max = 10 ** length - 1
@@ -47,6 +49,63 @@ export class UserService {
 
 	private generateBackupCodes(count = BACKUP_CODE_COUNT): string[] {
 		return Array.from({ length: count }, () => this.generateRandomCode(BACKUP_CODE_LENGTH))
+	}
+
+	private normalizeEmail(email?: string) {
+		return email?.trim().toLowerCase()
+	}
+
+	private async findUserByEmailInsensitive(email: string) {
+		const normalized = email.trim()
+		return UserModel.findOne({ email: { $regex: `^${escapeRegExp(normalized)}$`, $options: 'i' } })
+	}
+
+	private async findUserByOAuth(provider: OAuthProvider, providerId: string) {
+		return UserModel.findOne({ 'oauthAccounts.provider': provider, 'oauthAccounts.providerId': providerId })
+	}
+
+	private async ensureOAuthAccountAvailable(provider: OAuthProvider, providerId: string, excludeUserId?: number) {
+		const query: any = {
+			'oauthAccounts.provider': provider,
+			'oauthAccounts.providerId': providerId,
+		}
+		if (excludeUserId !== undefined) {
+			query.userId = { $ne: excludeUserId }
+		}
+		const existing = await UserModel.findOne(query)
+		if (existing) {
+			throw new Error('OAUTH_ACCOUNT_ALREADY_LINKED')
+		}
+	}
+
+	private sanitizeUsername(input: string): string {
+		const base = input.normalize().replace(/[^a-zA-Z0-9]+/g, '').slice(0, 20) || `user${Date.now()}`
+		return base.toLowerCase()
+	}
+
+	private async generateUniqueUsername(base: string): Promise<string> {
+		let candidate = this.sanitizeUsername(base)
+		let attempt = 0
+		while (await UserModel.findOne({ username: candidate })) {
+			attempt += 1
+			candidate = `${this.sanitizeUsername(base)}${attempt}`
+		}
+		return candidate
+	}
+
+	private generateRandomString(length = 32) {
+		return crypto.randomBytes(length).toString('hex')
+	}
+
+	private formatOAuthProfile(profile: OAuthProfile) {
+		return {
+			provider: profile.provider,
+			providerId: profile.providerId,
+			email: this.normalizeEmail(profile.email),
+			name: profile.name,
+			avatar: profile.avatar,
+			linkedAt: new Date(),
+		}
 	}
 
 	async register(params: { username: string; email: string; password?: string; passwordHash?: string; nickname?: string; verificationCode?: string; invitationCode?: string }): Promise<{ token: string; user: any }> {
@@ -578,9 +637,72 @@ export class UserService {
 
 	async getTwoFactorStatusByEmail(email: string) {
 		const trimmedEmail = email.trim()
-		const user = await UserModel.findOne({ email: new RegExp(`^${trimmedEmail}$`, 'i') })
+		const user = await this.findUserByEmailInsensitive(trimmedEmail)
 		if (!user) return { have2FA: false as const, type: 'none' as const }
 		return this.getTwoFactorStatusByUid(user.userId)
+	}
+
+	async handleOAuthLogin(profile: OAuthProfile) {
+		const normalizedEmail = profile.email ? this.normalizeEmail(profile.email) : undefined
+		let user = await this.findUserByOAuth(profile.provider, profile.providerId)
+		let isNewUser = false
+
+		if (!user && normalizedEmail) {
+			user = await this.findUserByEmailInsensitive(normalizedEmail)
+		}
+
+		if (!user) {
+			isNewUser = true
+			const usernameBase = normalizedEmail?.split('@')[0] ?? `${profile.provider}_user`
+			const username = await this.generateUniqueUsername(usernameBase)
+			const randomPassword = this.generateRandomString(16)
+			const passwordHash = await bcrypt.hash(randomPassword, ENV.BCRYPT_ROUNDS)
+			const fallbackEmail = normalizedEmail ?? `${profile.provider}-${profile.providerId}@oauth.mtlbooks`
+			const now = new Date()
+			user = await UserModel.create({
+				userId: await getNextSequence('userId'),
+				uuid: uuidv4(),
+				username,
+				nickname: profile.name || username,
+				email: fallbackEmail,
+				isEmailVerified: !!normalizedEmail,
+				password: passwordHash,
+				avatar: profile.avatar ?? undefined,
+				roles: ['user'],
+				permissions: [],
+				is2FAEnabled: false,
+				twoFactorType: 'none',
+				lastLoginAt: now,
+				oauthAccounts: [this.formatOAuthProfile(profile)],
+			})
+			await RbacUserBindingModel.updateOne(
+				{ userId: user.userId, uuid: user.uuid },
+				{ $setOnInsert: { roles: user.roles, permissions: [] } },
+				{ upsert: true }
+			)
+		} else {
+			await this.ensureOAuthAccountAvailable(profile.provider, profile.providerId, user.userId)
+			const accounts = Array.isArray(user.oauthAccounts)
+				? user.oauthAccounts.map((account: any) => (typeof account.toObject === 'function' ? account.toObject() : account))
+				: []
+			const entry = this.formatOAuthProfile(profile)
+			const existingIndex = accounts.findIndex((account: any) => account.provider === profile.provider)
+			if (existingIndex >= 0) accounts[existingIndex] = entry
+			else accounts.push(entry)
+			user.set('oauthAccounts', accounts)
+			if (!user.avatar && profile.avatar) user.avatar = profile.avatar
+			if (normalizedEmail && !user.email) {
+				user.email = normalizedEmail
+				user.isEmailVerified = true
+			}
+			user.markModified('oauthAccounts')
+		}
+
+		user.lastLoginAt = new Date()
+		await user.save()
+
+		const token = this.signToken({ uid: user.userId, uuid: user.uuid, roles: user.roles })
+		return { token, user, isNewUser }
 	}
 
 	// Admin
