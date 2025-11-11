@@ -26,13 +26,27 @@ function clearCookies(reply: FastifyReply) {
 	reply.clearCookie('uuid', opt)
 }
 
+async function resolveAuthContext(request: FastifyRequest) {
+	const cookies: any = request.cookies || {}
+	const token = cookies?.token as string | undefined
+	const uid = cookies?.uid ? Number(cookies.uid) : undefined
+	if (!token || !uid) throw new Error('Unauthorized')
+	try {
+		const payload: any = jwt.verify(token, ENV.JWT_SECRET as unknown as jwt.Secret)
+		if (!payload || typeof payload.uid !== 'number' || payload.uid !== uid) throw new Error('Unauthorized')
+		return { uid, uuid: payload.uuid as string | undefined }
+	} catch {
+		throw new Error('Unauthorized')
+	}
+}
+
 export const UserController = {
 	// POST /user/registering - No RBAC (public)
 	registering: async (request: FastifyRequest, reply: FastifyReply) => {
 		const body = (request.body as any) || {}
 		const { email, verificationCode, passwordHash, passwordHint, invitationCode, username, userNickname } = body
 		try {
-			const result = await userService.register({ username, email, passwordHash, nickname: userNickname })
+			const result = await userService.register({ username, email, passwordHash, nickname: userNickname, verificationCode, invitationCode })
 			setCookies(reply, { token: result.token, email, uid: result.user.userId, uuid: result.user.uuid })
 			return { success: true, UUID: result.user.uuid, uid: result.user.userId, token: result.token, message: 'OK' }
 		} catch (e: any) {
@@ -43,12 +57,18 @@ export const UserController = {
 	// POST /user/login - No RBAC (public)
 	login: async (request: FastifyRequest, reply: FastifyReply) => {
 		const body = (request.body as any) || {}
-		const { email, passwordHash, clientOtp, verificationCode } = body
+		const { email, passwordHash, clientOtp } = body
 		try {
-			const result = await userService.login({ email, passwordHash })
+			const result = await userService.login({ email, passwordHash, clientOtp })
 			setCookies(reply, { token: result.token, email: result.user.email, uid: result.user.userId, uuid: result.user.uuid })
 			return { success: true, email: result.user.email, UUID: result.user.uuid, uid: result.user.userId, token: result.token, passwordHint: '', message: 'OK' }
-		} catch {
+		} catch (error: any) {
+			if (error?.message === 'TOTP_REQUIRED') {
+				return reply.code(401).send({ success: false, message: 'totp_required', requireTotp: true })
+			}
+			if (error?.message === 'INVALID_TOTP') {
+				return reply.code(401).send({ success: false, message: 'invalid_totp', requireTotp: true })
+			}
 			return reply.code(401).send({ success: false, message: 'Email or password incorrect' })
 		}
 	},
@@ -149,27 +169,40 @@ export const UserController = {
 
 	// POST /user/createTotpAuthenticator - RBAC protected via preHandler
 	createTotp: async (request: FastifyRequest) => {
-		const cookies: any = request.cookies || {}
-		const uid = cookies?.uid ? Number(cookies.uid) : undefined
-		if (!uid) return { success: false, message: 'Not logged in' }
-		
-		const { otpauth } = await userService.setupTotp(uid)
-		return { success: true, otpauth }
+		try {
+			const { uid } = await resolveAuthContext(request)
+			const result = await userService.setupTotp(uid)
+			if (result.alreadyEnabled) {
+				return { success: true, isExists: true, existsAuthenticatorType: 'totp' as const }
+			}
+			return { success: true, isExists: false, result: { otpAuth: result.otpauth } }
+		} catch (error: any) {
+			console.error('Create TOTP authenticator error:', error)
+			return { success: false, isExists: false, message: error?.message || 'Failed to create TOTP authenticator' }
+		}
 	},
 
 	// POST /user/confirmUserTotpAuthenticator - RBAC protected via preHandler
 	confirmTotp: async (request: FastifyRequest) => {
-		const cookies: any = request.cookies || {}
-		const uid = cookies?.uid ? Number(cookies.uid) : undefined
-		if (!uid) return { success: false, message: 'Not logged in' }
-		
-		const { clientOtp } = (request.body as any) || {}
-		await userService.verifyTotp(uid, clientOtp)
-		return { success: true }
+		try {
+			const { uid } = await resolveAuthContext(request)
+			const { clientOtp } = (request.body as any) || {}
+			if (!clientOtp) {
+				return { success: false, message: 'TOTP code required' }
+			}
+			const result = await userService.confirmTotp(uid, clientOtp)
+			return { success: true, result: { backupCode: result.backupCodes, recoveryCode: result.recoveryCode } }
+		} catch (error: any) {
+			console.error('Confirm TOTP authenticator error:', error)
+			return { success: false, message: error?.message || 'Failed to confirm TOTP authenticator' }
+		}
 	},
 
 	// Email 2FA endpoints - RBAC protected via preHandler
 	createEmailAuthenticator: async (request: FastifyRequest) => {
+		if (!ENV.REQUIRE_REGISTRATION_VERIFICATION) {
+			return { success: false, message: 'Email-based 2FA is disabled' }
+		}
 		const cookies: any = request.cookies || {}
 		const uuid = cookies?.uuid
 		const token = cookies?.token
@@ -193,6 +226,9 @@ export const UserController = {
 	},
 
 	sendUserEmailAuthenticator: async (request: FastifyRequest) => {
+		if (!ENV.REQUIRE_REGISTRATION_VERIFICATION) {
+			return { success: false, message: 'Email-based 2FA is disabled' }
+		}
 		const body = request.body as any
 		const { email, passwordHash, clientLanguage } = body
 		
@@ -214,6 +250,9 @@ export const UserController = {
 	},
 
 	sendDeleteUserEmailAuthenticator: async (request: FastifyRequest) => {
+		if (!ENV.REQUIRE_REGISTRATION_VERIFICATION) {
+			return { success: false, message: 'Email-based 2FA is disabled' }
+		}
 		const cookies: any = request.cookies || {}
 		const uuid = cookies?.uuid
 		const token = cookies?.token
@@ -238,6 +277,9 @@ export const UserController = {
 	},
 
 	deleteUserEmailAuthenticator: async (request: FastifyRequest) => {
+		if (!ENV.REQUIRE_REGISTRATION_VERIFICATION) {
+			return { success: false, message: 'Email-based 2FA is disabled' }
+		}
 		const cookies: any = request.cookies || {}
 		const uuid = cookies?.uuid
 		const token = cookies?.token
@@ -274,13 +316,11 @@ export const UserController = {
 		}
 		
 		try {
-			// TODO: Implement proper 2FA check by email
-			// For now, return a stub response
-			return { 
-				success: true, 
-				have2FA: false, 
-				message: '2FA check by email not yet implemented' 
+			const status = await userService.getTwoFactorStatusByEmail(email)
+			if (!ENV.REQUIRE_REGISTRATION_VERIFICATION && status.type === 'email') {
+				return { success: true, have2FA: false, type: 'none' as const }
 			}
+			return { success: true, ...status }
 		} catch (error) {
 			console.error('Check 2FA by email error:', error)
 			return { success: false, have2FA: false, message: 'Failed to check 2FA status' }
@@ -288,22 +328,13 @@ export const UserController = {
 	},
 
 	checkUserHave2FAByUUID: async (request: FastifyRequest) => {
-		const cookies: any = request.cookies || {}
-		const uuid = cookies?.uuid
-		const token = cookies?.token
-		
-		if (!uuid || !token) {
-			return { success: false, have2FA: false, message: 'Authentication required' }
-		}
-		
 		try {
-			// TODO: Implement proper 2FA check by UUID
-			// For now, return a stub response
-			return { 
-				success: true, 
-				have2FA: false, 
-				message: '2FA check by UUID not yet implemented' 
+			const { uid } = await resolveAuthContext(request)
+			const status = await userService.getTwoFactorStatusByUid(uid)
+			if (!ENV.REQUIRE_REGISTRATION_VERIFICATION && status.type === 'email') {
+				return { success: true, have2FA: false, type: 'none' as const }
 			}
+			return { success: true, ...status }
 		} catch (error) {
 			console.error('Check 2FA by UUID error:', error)
 			return { success: false, have2FA: false, message: 'Failed to check 2FA status' }
@@ -312,30 +343,20 @@ export const UserController = {
 
 	// DELETE /user/deleteTotpAuthenticatorByTotpVerificationCodeController - RBAC protected via preHandler
 	deleteTotpByCode: async (request: FastifyRequest) => {
-		const cookies: any = request.cookies || {}
-		const uuid = cookies?.uuid
-		const token = cookies?.token
-		const body = request.body as any
-		const { clientOtp, passwordHash } = body
-		
-		if (!uuid || !token) {
-			return { success: false, message: 'Authentication required' }
-		}
-		
-		if (!clientOtp || !passwordHash) {
-			return { success: false, message: 'TOTP code and password required' }
-		}
-		
 		try {
-			// TODO: Implement proper TOTP deletion logic
-			// For now, return a stub response
-			return { 
-				success: false, 
-				message: 'TOTP deletion not yet implemented' 
+			const { uid } = await resolveAuthContext(request)
+			const body = request.body as any
+			const { clientOtp, passwordHash } = body
+			
+			if (!clientOtp || !passwordHash) {
+				return { success: false, message: 'TOTP code and password required' }
 			}
-		} catch (error) {
+			
+			await userService.deleteTotp(uid, passwordHash, clientOtp)
+			return { success: true, isCoolingDown: false }
+		} catch (error: any) {
 			console.error('Delete TOTP authenticator error:', error)
-			return { success: false, message: 'Failed to delete TOTP authenticator' }
+			return { success: false, message: error?.message || 'Failed to delete TOTP authenticator' }
 		}
 	},
 
@@ -481,14 +502,132 @@ export const UserController = {
 			return { success: false, message: 'Failed to update user settings' }
 		}
 	},
-	requestSendVerificationCode: async () => ({ success: true }),
-	createInvitationCode: async () => ({ success: false, message: 'Not implemented' }),
-	getMyInvitationCode: async () => ({ success: false, codes: [] }),
-	checkInvitationCode: async () => ({ success: false, available: false }),
-	requestSendChangeEmailVerificationCode: async () => ({ success: false }),
-	requestSendChangePasswordVerificationCode: async () => ({ success: false }),
-	updateUserEmail: async () => ({ success: false }),
-	updateUserPassword: async () => ({ success: false }),
+	requestSendVerificationCode: async (request: FastifyRequest) => {
+		const body = (request.body as any) || {}
+		const email = body?.email as string | undefined
+		if (!email) return { success: false, isTimeout: false, message: 'Email is required' }
+		return await userService.sendRegistrationVerificationCode(email)
+	},
+	createInvitationCode: async (request: FastifyRequest) => {
+		if (!ENV.ENABLE_INVITATION) {
+			return { success: false, isCoolingDown: false, message: 'Invitation codes are disabled' }
+		}
+		try {
+			const auth = await resolveAuthContext(request)
+			const invitation = await userService.createInvitationCode(auth.uid, auth.uuid ?? '')
+			return {
+				success: true,
+				isCoolingDown: false,
+				invitationCodeResult: {
+					creatorUid: invitation.creatorUid,
+					creatorUUID: invitation.creatorUUID,
+					invitationCode: invitation.invitationCode,
+					generationDateTime: invitation.generationDateTime,
+					isPending: invitation.isPending,
+					disabled: invitation.disabled,
+					assignee: invitation.assigneeUid,
+					usedDateTime: invitation.usedDateTime,
+				},
+			}
+		} catch (error: any) {
+			if (error?.message === 'Unauthorized') return { success: false, isCoolingDown: false, message: 'Unauthorized' }
+			return { success: false, isCoolingDown: false, message: error?.message || 'Failed to create invitation code' }
+		}
+	},
+	getMyInvitationCode: async (request: FastifyRequest) => {
+		if (!ENV.ENABLE_INVITATION) {
+			return { success: true, invitationCodeResult: [] }
+		}
+		try {
+			const auth = await resolveAuthContext(request)
+			const codes = await userService.getInvitationCodes(auth.uid)
+			const normalized = codes.map(code => ({
+				creatorUid: code.creatorUid,
+				creatorUUID: code.creatorUUID,
+				invitationCode: code.invitationCode,
+				generationDateTime: code.generationDateTime,
+				isPending: code.isPending,
+				disabled: code.disabled,
+				assignee: code.assigneeUid,
+				usedDateTime: code.usedDateTime,
+			}))
+			return { success: true, invitationCodeResult: normalized }
+		} catch (error: any) {
+			if (error?.message === 'Unauthorized') return { success: false, invitationCodeResult: [], message: 'Unauthorized' }
+			return { success: false, invitationCodeResult: [], message: error?.message || 'Failed to get invitation codes' }
+		}
+	},
+	checkInvitationCode: async (request: FastifyRequest) => {
+		if (!ENV.ENABLE_INVITATION) {
+			return { success: true, isAvailableInvitationCode: true }
+		}
+		const body = (request.body as any) || {}
+		const invitationCode = body?.invitationCode as string | undefined
+		if (!invitationCode) return { success: false, isAvailableInvitationCode: false, message: 'Invitation code required' }
+		return userService.checkInvitationCodeAvailability(invitationCode)
+	},
+	requestSendChangeEmailVerificationCode: async (request: FastifyRequest) => {
+		try {
+			const auth = await resolveAuthContext(request)
+			const body = (request.body as any) || {}
+			const newEmail = body?.newEmail as string | undefined
+			if (!newEmail) return { success: false, isCoolingDown: false, message: 'New email is required' }
+			return await userService.sendChangeEmailVerificationCode(auth.uid, newEmail)
+		} catch (error: any) {
+			if (error?.message === 'Unauthorized') return { success: false, isCoolingDown: false, message: 'Unauthorized' }
+			return { success: false, isCoolingDown: false, message: error?.message || 'Failed to send verification code' }
+		}
+	},
+	requestSendChangePasswordVerificationCode: async (request: FastifyRequest) => {
+		try {
+			const auth = await resolveAuthContext(request)
+			return await userService.sendChangePasswordVerificationCode(auth.uid)
+		} catch (error: any) {
+			if (error?.message === 'Unauthorized') return { success: false, isCoolingDown: false, message: 'Unauthorized' }
+			return { success: false, isCoolingDown: false, message: error?.message || 'Failed to send verification code' }
+		}
+	},
+	updateUserEmail: async (request: FastifyRequest) => {
+		try {
+			const auth = await resolveAuthContext(request)
+			const body = (request.body as any) || {}
+			const { oldEmail, newEmail, passwordHash, verificationCode } = body || {}
+			if (!oldEmail || !newEmail || !passwordHash || !verificationCode) {
+				return { success: false, message: 'Missing required fields' }
+			}
+			await userService.updateEmailWithVerification({
+				uid: auth.uid,
+				oldEmail,
+				newEmail,
+				passwordHash,
+				verificationCode,
+			})
+			return { success: true }
+		} catch (error: any) {
+			if (error?.message === 'Unauthorized') return { success: false, message: 'Unauthorized' }
+			return { success: false, message: error?.message || 'Failed to update email' }
+		}
+	},
+	updateUserPassword: async (request: FastifyRequest) => {
+		try {
+			const auth = await resolveAuthContext(request)
+			const body = (request.body as any) || {}
+			const { oldPasswordHash, newPasswordHash, verificationCode } = body || {}
+			if (!oldPasswordHash || !newPasswordHash || !verificationCode) {
+				return { success: false, message: 'Missing required fields' }
+			}
+			await userService.updatePasswordWithVerification({
+				uid: auth.uid,
+				oldPasswordHash,
+				newPasswordHash,
+				verificationCode,
+			})
+			return { success: true }
+		} catch (error: any) {
+			if (error?.message === 'Unauthorized') return { success: false, message: 'Unauthorized' }
+			return { success: false, message: error?.message || 'Failed to update password' }
+		}
+	},
 	checkUsername: async (request: FastifyRequest) => {
 		const username = (request.query as any)?.username as string
 		if (!username) return { success: true, available: false }

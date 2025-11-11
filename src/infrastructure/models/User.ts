@@ -24,8 +24,25 @@ const UserSchema = new Schema({
 	emailVerifyTokenExpiresAt: { type: Date },
 	passwordResetToken: { type: String, index: true },
 	passwordResetTokenExpiresAt: { type: Date },
-	// TOTP
+	// Two-factor authentication
+	twoFactorType: { type: String, enum: ['none', 'email', 'totp'], default: 'none' },
 	totpSecret: { type: String },
+	totpBackupCodes: { type: [String], default: [] },
+	totpRecoveryCode: { type: String },
+	totpEnabledAt: { type: Date },
+	oauthAccounts: {
+		type: [
+			{
+				provider: { type: String, required: true },
+				providerId: { type: String, required: true },
+				email: { type: String },
+				name: { type: String },
+				avatar: { type: String },
+				linkedAt: { type: Date, default: Date.now },
+			},
+		],
+		default: [],
+	},
 
 	// moderation
 	blockReason: { type: String }
@@ -35,6 +52,7 @@ UserSchema.index({ email: 1, username: 1 })
 UserSchema.index({ roles: 1 })
 UserSchema.index({ createdAt: -1 })
 UserSchema.index({ isBlocked: 1 })
+UserSchema.index({ 'oauthAccounts.provider': 1, 'oauthAccounts.providerId': 1 }, { sparse: true })
 
 export type UserDocument = InferSchemaType<typeof UserSchema>
 export const UserModel = model('user', UserSchema) 

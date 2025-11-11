@@ -16,7 +16,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
 	fastify.post('/user/updateOrCreateUserInfo', { preHandler: [createRbacGuard('both')] }, UserController.updateOrCreateUserInfo)
 	fastify.get('/user/infoByUid', { preHandler: [createRbacGuard('both')] }, UserController.getUserInfoByUid)
 	fastify.get('/user/existsByUID', { preHandler: [createRbacGuard('both')] }, UserController.userExistsCheckByUID)
-	fastify.get('/user/emailExists', { preHandler: [createRbacGuard('both')] }, UserController.userEmailExistsCheck)
+	fastify.get('/user/existsCheck', UserController.userEmailExistsCheck)
 	fastify.post('/user/createTotpAuthenticator', { preHandler: [createRbacGuard('both')] }, UserController.createTotp)
 	fastify.post('/user/confirmUserTotpAuthenticator', { preHandler: [createRbacGuard('both')] }, UserController.confirmTotp)
 	fastify.delete('/user/deleteTotpAuthenticatorByTotpVerificationCodeController', { preHandler: [createRbacGuard('both')] }, UserController.deleteTotpByCode)
@@ -43,7 +43,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
 	fastify.post('/user/requestSendChangePasswordVerificationCode', { preHandler: [createRbacGuard('both')] }, UserController.requestSendChangePasswordVerificationCode)
 	fastify.post('/user/update/email', { preHandler: [createRbacGuard('both')] }, UserController.updateUserEmail)
 	fastify.post('/user/update/password', { preHandler: [createRbacGuard('both')] }, UserController.updateUserPassword)
-	fastify.get('/user/checkUsername', { preHandler: [createRbacGuard('both')] }, UserController.checkUsername)
+	fastify.get('/user/checkUsername', UserController.checkUsername)
 	fastify.get('/user/avatar/preUpload', { preHandler: [createRbacGuard('both')] }, UserController.getUserAvatarUploadSignedUrl)
 
 	// Admin routes (Admin RBAC protected)
