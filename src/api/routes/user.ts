@@ -10,9 +10,10 @@ export default async function userRoutes(fastify: FastifyInstance) {
 	fastify.post('/user/requestSendVerificationCode', UserController.requestSendVerificationCode)
 	fastify.get('/user/logout', UserController.logout)
 	fastify.post('/user/self', UserController.self)
-	fastify.get('/user/oauth/:provider', UserController.oauthStart)
+	fastify.get('/user/oauth/:provider/start', UserController.oauthStart)
 	fastify.get('/user/oauth/:provider/callback', UserController.oauthCallback)
-	fastify.get('/user/oauth/providers', UserController.oauthProviders)
+	fastify.post('/user/oauth/totp', UserController.oauthTotpConfirm)
+	fastify.get('/user/publicProfile', UserController.publicProfile)
 	
 	// User routes (RBAC protected with elegant syntax)
 	fastify.post('/user/update/info', { preHandler: [createRbacGuard('both')] }, UserController.updateInfo)
@@ -48,6 +49,7 @@ export default async function userRoutes(fastify: FastifyInstance) {
 	fastify.post('/user/update/password', { preHandler: [createRbacGuard('both')] }, UserController.updateUserPassword)
 	fastify.get('/user/checkUsername', UserController.checkUsername)
 	fastify.get('/user/avatar/preUpload', { preHandler: [createRbacGuard('both')] }, UserController.getUserAvatarUploadSignedUrl)
+	fastify.delete('/user/oauth/:provider', { preHandler: [createRbacGuard('both')] }, UserController.unlinkOAuthProvider)
 
 	// Admin routes (Admin RBAC protected)
 	fastify.get('/user/info', { preHandler: [createRbacGuard('both')] }, UserController.info)

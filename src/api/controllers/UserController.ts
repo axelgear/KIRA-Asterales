@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
-import { userService, type OAuthProfile } from '../../services/UserService.js'
+import jwt from 'jsonwebtoken'
+import { userService } from '../../services/UserService.js'
 import { ENV } from '../../config/environment.js'
 
 function setCookies(reply: FastifyReply, data: { token: string; email?: string; uid: number; uuid: string }) {
@@ -27,198 +27,210 @@ function clearCookies(reply: FastifyReply) {
 	reply.clearCookie('uuid', opt)
 }
 
-const OAUTH_STATE_COOKIE = 'oauth_state'
-const OAUTH_RETURN_COOKIE = 'oauth_return'
-const OAUTH_PROVIDERS = ['google', 'discord', 'yandex'] as const
-type OAuthProvider = typeof OAUTH_PROVIDERS[number]
+type OAuthProvider = 'google' | 'discord' | 'yandex'
 
-type ProviderConfig = {
+type OAuthConfig = {
+	scope: string
 	authUrl: string
 	tokenUrl: string
-	userInfoUrl: string
-	scope: string
-	clientId?: string | null
-	clientSecret?: string | null
-	redirectUri?: string | null
+	getCredentials: () => { clientId?: string; clientSecret?: string; redirectUri?: string }
+	buildAuthorizeParams?: (params: URLSearchParams) => URLSearchParams
+	buildTokenRequestBody: (code: string, credentials: { clientId: string; clientSecret: string; redirectUri: string }) => Record<string, string>
+	fetchUserProfile: (token: { access_token: string; token_type?: string }) => Promise<any>
+	mapProfile: (data: any) => { providerId: string; email?: string | undefined; name?: string | undefined; avatar?: string | undefined }
 }
 
-const PROVIDER_CONFIG: Record<OAuthProvider, ProviderConfig> = {
+const FIVE_MINUTES = 60 * 5
+
+const oauthCookieOptions = {
+	httpOnly: true,
+	secure: process.env.NODE_ENV === 'production',
+	sameSite: 'lax' as const,
+	maxAge: FIVE_MINUTES,
+	path: '/',
+}
+
+const oauthConfigs: Record<OAuthProvider, OAuthConfig> = {
 	google: {
+		scope: 'openid email profile',
 		authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
 		tokenUrl: 'https://oauth2.googleapis.com/token',
-		userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
-		scope: 'openid email profile',
-		clientId: ENV.GOOGLE_CLIENT_ID ?? null,
-		clientSecret: ENV.GOOGLE_CLIENT_SECRET ?? null,
-		redirectUri: ENV.GOOGLE_REDIRECT_URI ?? null,
+		getCredentials: () => {
+			const credentials: { clientId?: string; clientSecret?: string; redirectUri?: string } = {}
+			if (ENV.GOOGLE_CLIENT_ID) credentials.clientId = ENV.GOOGLE_CLIENT_ID
+			if (ENV.GOOGLE_CLIENT_SECRET) credentials.clientSecret = ENV.GOOGLE_CLIENT_SECRET
+			if (ENV.GOOGLE_REDIRECT_URI) credentials.redirectUri = ENV.GOOGLE_REDIRECT_URI
+			return credentials
+		},
+		buildAuthorizeParams: params => {
+			params.set('access_type', 'offline')
+			params.set('prompt', 'select_account')
+			return params
+		},
+		buildTokenRequestBody: (code, credentials) => ({
+			client_id: credentials.clientId,
+			client_secret: credentials.clientSecret,
+			code,
+			grant_type: 'authorization_code',
+			redirect_uri: credentials.redirectUri,
+		}),
+		fetchUserProfile: async token => {
+			const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+				headers: {
+					Authorization: `Bearer ${token.access_token}`,
+				},
+			})
+			if (!response.ok) {
+				throw new Error('USER_INFO_FAILED')
+			}
+			return response.json()
+		},
+		mapProfile: data => ({
+			providerId: typeof data?.id === 'string' ? data.id : String(data?.id ?? ''),
+			email: typeof data?.email === 'string' ? data.email : undefined,
+			name: typeof data?.name === 'string' ? data.name : undefined,
+			avatar: typeof data?.picture === 'string' ? data.picture : undefined,
+		}),
 	},
 	discord: {
+		scope: 'identify email',
 		authUrl: 'https://discord.com/api/oauth2/authorize',
 		tokenUrl: 'https://discord.com/api/oauth2/token',
-		userInfoUrl: 'https://discord.com/api/users/@me',
-		scope: 'identify email',
-		clientId: ENV.DISCORD_CLIENT_ID ?? null,
-		clientSecret: ENV.DISCORD_CLIENT_SECRET ?? null,
-		redirectUri: ENV.DISCORD_REDIRECT_URI ?? null,
+		getCredentials: () => {
+			const credentials: { clientId?: string; clientSecret?: string; redirectUri?: string } = {}
+			if (ENV.DISCORD_CLIENT_ID) credentials.clientId = ENV.DISCORD_CLIENT_ID
+			if (ENV.DISCORD_CLIENT_SECRET) credentials.clientSecret = ENV.DISCORD_CLIENT_SECRET
+			if (ENV.DISCORD_REDIRECT_URI) credentials.redirectUri = ENV.DISCORD_REDIRECT_URI
+			return credentials
+		},
+		buildTokenRequestBody: (code, credentials) => ({
+			client_id: credentials.clientId,
+			client_secret: credentials.clientSecret,
+			code,
+			grant_type: 'authorization_code',
+			redirect_uri: credentials.redirectUri,
+		}),
+		fetchUserProfile: async token => {
+			const response = await fetch('https://discord.com/api/users/@me', {
+				headers: {
+					Authorization: `Bearer ${token.access_token}`,
+				},
+			})
+			if (!response.ok) {
+				throw new Error('USER_INFO_FAILED')
+			}
+			return response.json()
+		},
+		mapProfile: data => ({
+			providerId: typeof data?.id === 'string' ? data.id : String(data?.id ?? ''),
+			email: typeof data?.email === 'string' ? data.email : undefined,
+			name: typeof data?.global_name === 'string' ? data.global_name : (typeof data?.username === 'string' ? data.username : undefined),
+			avatar: typeof data?.avatar === 'string' ? `https://cdn.discordapp.com/avatars/${data.id}/${data.avatar}.png` : undefined,
+		}),
 	},
 	yandex: {
+		scope: 'login:email login:info',
 		authUrl: 'https://oauth.yandex.com/authorize',
 		tokenUrl: 'https://oauth.yandex.com/token',
-		userInfoUrl: 'https://login.yandex.ru/info?format=json',
-		scope: 'login:email login:info',
-		clientId: ENV.YANDEX_CLIENT_ID ?? null,
-		clientSecret: ENV.YANDEX_CLIENT_SECRET ?? null,
-		redirectUri: ENV.YANDEX_REDIRECT_URI ?? null,
+		getCredentials: () => {
+			const credentials: { clientId?: string; clientSecret?: string; redirectUri?: string } = {}
+			if (ENV.YANDEX_CLIENT_ID) credentials.clientId = ENV.YANDEX_CLIENT_ID
+			if (ENV.YANDEX_CLIENT_SECRET) credentials.clientSecret = ENV.YANDEX_CLIENT_SECRET
+			if (ENV.YANDEX_REDIRECT_URI) credentials.redirectUri = ENV.YANDEX_REDIRECT_URI
+			return credentials
+		},
+		buildAuthorizeParams: params => {
+			params.set('force_confirm', 'yes')
+			return params
+		},
+		buildTokenRequestBody: (code, credentials) => ({
+			client_id: credentials.clientId,
+			client_secret: credentials.clientSecret,
+			code,
+			grant_type: 'authorization_code',
+			redirect_uri: credentials.redirectUri,
+		}),
+		fetchUserProfile: async token => {
+			const response = await fetch('https://login.yandex.ru/info', {
+				headers: {
+					Authorization: `OAuth ${token.access_token}`,
+				},
+			})
+			if (!response.ok) {
+				throw new Error('USER_INFO_FAILED')
+			}
+			return response.json()
+		},
+		mapProfile: data => ({
+			providerId: data?.id ? String(data.id) : '',
+			email: typeof data?.default_email === 'string' ? data.default_email : undefined,
+			name: typeof data?.real_name === 'string'
+				? data.real_name
+				: (typeof data?.display_name === 'string' ? data.display_name : (typeof data?.login === 'string' ? data.login : undefined)),
+			avatar: typeof data?.default_avatar_id === 'string'
+				? `https://avatars.yandex.net/get-yapic/${data.default_avatar_id}/islands-200`
+				: undefined,
+		}),
 	},
 }
 
-const FRONTEND_BASES = (ENV.FRONTEND_URL || '')
-	.split(',')
-	.map(base => base.trim())
-	.filter(Boolean)
-const DEFAULT_FRONTEND_URL = FRONTEND_BASES[0] || 'http://localhost:3000/'
-
-function isProviderConfigured(provider: OAuthProvider) {
-	const config = PROVIDER_CONFIG[provider]
-	return Boolean(config.clientId && config.clientSecret)
-}
-
-function buildState() {
-	return crypto.randomBytes(32).toString('hex')
-}
-
-function allowedReturnUrl(url?: string) {
-	if (!url) return undefined
-	try {
-		const parsed = new URL(url)
-		const allowed = FRONTEND_BASES.some(base => {
-			try {
-				return new URL(base).hostname === parsed.hostname
-			} catch {
-				return false
-			}
-		})
-		return allowed ? parsed.toString() : undefined
-	} catch {
-		return undefined
-	}
-}
-
-function getDefaultRedirect(path = '/', params: Record<string, string | undefined> = {}) {
-	const url = new URL(path, DEFAULT_FRONTEND_URL)
-	Object.entries(params).forEach(([key, value]) => {
-		if (value !== undefined) url.searchParams.set(key, value)
-	})
-	return url.toString()
-}
-
-function buildRedirect(returnUrl: string | undefined, fallbackPath: string, params: Record<string, string | undefined> = {}) {
-	const sanitized = allowedReturnUrl(returnUrl)
-	if (sanitized) {
-		const url = new URL(sanitized)
-		Object.entries(params).forEach(([key, value]) => {
-			if (value !== undefined) url.searchParams.set(key, value)
-		})
-		return url.toString()
-	}
-	return getDefaultRedirect(fallbackPath, params)
-}
-
-function getRedirectUri(provider: OAuthProvider, request: FastifyRequest) {
-	const config = PROVIDER_CONFIG[provider]
-	if (config.redirectUri) return config.redirectUri
-	const forwardedProto = (request.headers['x-forwarded-proto'] as string) || request.protocol
-	const forwardedHost = (request.headers['x-forwarded-host'] as string) || request.headers.host || ''
-	const base = `${forwardedProto}://${forwardedHost}`
-	const defaultPath = {
-		google: '/user/oauth/google/callback',
-		discord: '/user/oauth/discord/callback',
-		yandex: '/user/oauth/yandex/callback',
-	} as const
-	return `${base}${defaultPath[provider]}`
-}
-
-function buildOAuthUrl(provider: OAuthProvider, state: string, request: FastifyRequest) {
-	const config = PROVIDER_CONFIG[provider]
-	const redirectUri = getRedirectUri(provider, request)
+function buildAuthorizeUrl(provider: OAuthProvider, credentials: { clientId: string; redirectUri: string }, state: string) {
+	const config = oauthConfigs[provider]
 	const params = new URLSearchParams({
-		client_id: config.clientId || '',
-		redirect_uri: redirectUri,
+		client_id: credentials.clientId,
+		redirect_uri: credentials.redirectUri,
 		response_type: 'code',
 		scope: config.scope,
 		state,
 	})
-	if (provider === 'google') {
-		params.set('access_type', 'offline')
-		params.set('include_granted_scopes', 'true')
-	}
-	return `${config.authUrl}?${params.toString()}`
+	return (config.buildAuthorizeParams ? config.buildAuthorizeParams(params) : params).toString()
 }
 
-async function exchangeCodeForToken(provider: OAuthProvider, code: string, request: FastifyRequest) {
-	const config = PROVIDER_CONFIG[provider]
-	const redirectUri = getRedirectUri(provider, request)
-	const body = new URLSearchParams({
-		client_id: config.clientId || '',
-		client_secret: config.clientSecret || '',
-		code,
-		grant_type: 'authorization_code',
-		redirect_uri: redirectUri,
-	})
-	const response = await fetch(config.tokenUrl, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-		body,
-	})
-	if (!response.ok) {
-		throw new Error(`Failed to exchange code for token: ${response.status}`)
+function getFrontendOrigin(request: FastifyRequest) {
+	const candidate = ENV.FRONTEND_URL || request.headers.origin || ''
+	try {
+		return new URL(candidate).origin
+	} catch {
+		return '*'
 	}
-	return response.json() as Promise<Record<string, any>>
 }
 
-async function fetchOAuthProfile(provider: OAuthProvider, accessToken: string) {
-	const config = PROVIDER_CONFIG[provider]
-	const headers =
-		provider === 'yandex'
-			? { Authorization: `OAuth ${accessToken}` }
-			: { Authorization: `Bearer ${accessToken}` }
-	const response = await fetch(config.userInfoUrl, { headers })
-	if (!response.ok) {
-		throw new Error(`Failed to fetch ${provider} user profile`)
+function sendOAuthResult(reply: FastifyReply, request: FastifyRequest, payload: { success: boolean; provider: OAuthProvider; mode: 'login' | 'link'; message?: string; user?: { uid: number; email: string; username: string }; requireTotp?: boolean; totpToken?: string }) {
+	const origin = getFrontendOrigin(request)
+	const data = JSON.stringify({
+		type: 'oauth-result',
+		...payload,
+	}).replace(/</g, '\\u003c')
+
+	const fallbackMessage = payload.success ? 'Login succeeded. You can close this window.' : (payload.message || 'Login failed. You can close this window.')
+	const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<title>OAuth ${payload.success ? 'Success' : 'Error'}</title>
+</head>
+<body>
+<script>
+(function () {
+	const data = ${data};
+	try {
+		if (window.opener && !window.opener.closed) {
+			window.opener.postMessage(data, ${JSON.stringify(origin)});
+		}
+	} catch (err) {
+		console.error('Failed to postMessage to opener', err);
 	}
-	return response.json() as Promise<Record<string, any>>
+	try { window.close(); } catch {}
+	setTimeout(function () {
+		document.body.textContent = ${JSON.stringify(fallbackMessage)};
+	}, 150);
+})();
+</script>
+</body>
+</html>`
+	reply.type('text/html').send(html)
 }
 
-function mapOAuthProfile(provider: OAuthProvider, raw: any): OAuthProfile {
-	switch (provider) {
-		case 'google':
-			return {
-				provider,
-				providerId: raw.id ?? raw.sub,
-				...(raw.email ? { email: raw.email } : {}),
-				...(raw.name ? { name: raw.name } : raw.email ? { name: raw.email } : {}),
-				...(raw.picture ? { avatar: raw.picture } : {}),
-			}
-		case 'discord':
-			return {
-				provider,
-				providerId: raw.id,
-				...(raw.email ? { email: raw.email } : {}),
-				...(raw.global_name || raw.username ? { name: raw.global_name || raw.username } : {}),
-				...(raw.avatar ? { avatar: `https://cdn.discordapp.com/avatars/${raw.id}/${raw.avatar}.png` } : {}),
-			}
-		case 'yandex':
-			return {
-				provider,
-				providerId: raw.id || raw.login,
-				...(raw.default_email ? { email: raw.default_email } : {}),
-				...(raw.real_name || raw.display_name || raw.login ? { name: raw.real_name || raw.display_name || raw.login } : {}),
-				...(raw.default_avatar_id ? { avatar: `https://avatars.yandex.net/get-yapic/${raw.default_avatar_id}/islands-200` } : {}),
-			}
-		default:
-			throw new Error(`Unsupported provider: ${provider}`)
-	}
-}
 async function resolveAuthContext(request: FastifyRequest) {
 	const cookies: any = request.cookies || {}
 	const token = cookies?.token as string | undefined
@@ -247,6 +259,22 @@ export const UserController = {
 		}
 	},
 
+	// POST /user/oauth/totp
+	oauthTotpConfirm: async (request: FastifyRequest, reply: FastifyReply) => {
+		const { totpToken, clientOtp } = (request.body as any) || {}
+		if (!totpToken || !clientOtp) {
+			return { success: false, message: 'Missing token or TOTP code' }
+		}
+		try {
+			const result = await userService.finalizeOAuthTotp({ totpToken, clientOtp })
+			setCookies(reply, { token: result.token, email: result.user.email, uid: result.user.userId, uuid: result.user.uuid })
+			return { success: true }
+		} catch (error: any) {
+			console.error('OAuth TOTP confirm error:', error)
+			return { success: false, message: error?.message || 'Failed to confirm TOTP code' }
+		}
+	},
+
 	// POST /user/login - No RBAC (public)
 	login: async (request: FastifyRequest, reply: FastifyReply) => {
 		const body = (request.body as any) || {}
@@ -257,12 +285,12 @@ export const UserController = {
 			return { success: true, email: result.user.email, UUID: result.user.uuid, uid: result.user.userId, token: result.token, passwordHint: '', message: 'OK' }
 		} catch (error: any) {
 			if (error?.message === 'TOTP_REQUIRED') {
-				return { success: false, message: 'totp_required', requireTotp: true }
+				return reply.code(401).send({ success: false, message: 'totp_required', requireTotp: true })
 			}
 			if (error?.message === 'INVALID_TOTP') {
-				return { success: false, message: 'invalid_totp', requireTotp: true }
+				return reply.code(401).send({ success: false, message: 'invalid_totp', requireTotp: true })
 			}
-			return { success: false, message: 'Email or password incorrect' }
+			return reply.code(401).send({ success: false, message: 'Email or password incorrect' })
 		}
 	},
 
@@ -289,102 +317,168 @@ export const UserController = {
 		return { success: true, message: 'OK' }
 	},
 
-	// GET /user/oauth/:provider - start OAuth login
+	// GET /user/oauth/:provider/start
 	oauthStart: async (request: FastifyRequest, reply: FastifyReply) => {
-		const providerParam = (request.params as any)?.provider as string
-		const provider = OAUTH_PROVIDERS.find(item => item === providerParam)
-		if (!provider) return reply.code(400).send({ success: false, message: 'Unsupported provider' })
-		if (!isProviderConfigured(provider)) return reply.code(503).send({ success: false, message: `${provider} oauth not configured` })
-
-		const { returnUrl } = request.query as { returnUrl?: string }
-		const sanitizedReturn = allowedReturnUrl(returnUrl)
-		const state = buildState()
-		const authUrl = buildOAuthUrl(provider, state, request)
-
-		const cookieOptions = {
-			httpOnly: true,
-			secure: request.protocol === 'https' || process.env.NODE_ENV === 'production',
-			sameSite: 'lax' as const,
-			path: '/',
-			maxAge: 600,
+		const provider = ((request.params as any)?.provider || '').toLowerCase() as OAuthProvider
+		const config = oauthConfigs[provider]
+		if (!config) {
+			return reply.code(404).send({ success: false, message: 'Unsupported provider' })
 		}
-
-		reply.setCookie(OAUTH_STATE_COOKIE, state, cookieOptions)
-		if (sanitizedReturn) {
-			reply.setCookie(OAUTH_RETURN_COOKIE, sanitizedReturn, cookieOptions)
+		const credentials = config.getCredentials()
+		const { clientId, clientSecret, redirectUri } = credentials
+		if (!clientId || !clientSecret || !redirectUri) {
+			return reply.code(503).send({ success: false, message: 'OAuth provider not configured' })
 		}
-
-		return reply.redirect(authUrl)
+		const state = crypto.randomBytes(32).toString('hex')
+		const requestedMode = ((request.query as any)?.mode === 'link') ? 'link' : 'login'
+		reply.setCookie('oauth_state', state, oauthCookieOptions)
+		reply.setCookie('oauth_provider', provider, oauthCookieOptions)
+		reply.setCookie('oauth_mode', requestedMode, oauthCookieOptions)
+		const authorizeParams = buildAuthorizeUrl(provider, { clientId, redirectUri }, state)
+		const redirectUrl = `${config.authUrl}?${authorizeParams}`
+		return reply.redirect(redirectUrl)
 	},
 
-	// GET /user/oauth/:provider/callback - OAuth callback
+	// GET /user/oauth/:provider/callback
 	oauthCallback: async (request: FastifyRequest, reply: FastifyReply) => {
-		const providerParam = (request.params as any)?.provider as string
-		const provider = OAUTH_PROVIDERS.find(item => item === providerParam)
-		if (!provider) return reply.redirect(getDefaultRedirect('/auth/error', { oauth: 'unsupported_provider' }))
+		const provider = ((request.params as any)?.provider || '').toLowerCase() as OAuthProvider
+		const config = oauthConfigs[provider]
+		if (!config) {
+			return reply.code(404).send({ success: false, message: 'Unsupported provider' })
+		}
+		const storedState = request.cookies?.oauth_state
+		const storedProvider = request.cookies?.oauth_provider
+		let mode: 'login' | 'link' = request.cookies?.oauth_mode === 'link' ? 'link' : 'login'
+		reply.clearCookie('oauth_state', { path: '/' })
+		reply.clearCookie('oauth_provider', { path: '/' })
+		reply.clearCookie('oauth_mode', { path: '/' })
 
-		const storedReturnUrl = request.cookies[OAUTH_RETURN_COOKIE]
-		const clearOAuthCookies = () => {
-			reply.clearCookie(OAUTH_STATE_COOKIE, { path: '/' })
-			reply.clearCookie(OAUTH_RETURN_COOKIE, { path: '/' })
+		const { code, state, error } = request.query as any
+		if (error) {
+			return sendOAuthResult(reply, request, { success: false, provider, mode, message: String(error) })
+		}
+		if (!code || !state) {
+			return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'Missing authorization code' })
+		}
+		if (!storedState || storedState !== state || storedProvider !== provider) {
+			return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'Invalid oauth state' })
+		}
+
+		const credentials = config.getCredentials()
+		const { clientId, clientSecret, redirectUri } = credentials
+		if (!clientId || !clientSecret || !redirectUri) {
+			return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'OAuth provider not configured' })
 		}
 
 		try {
-			if (!isProviderConfigured(provider)) {
-				clearOAuthCookies()
-				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'provider_not_configured', provider }))
-			}
-
-			const { code, state, error } = request.query as Record<string, string | undefined>
-			const storedState = request.cookies[OAUTH_STATE_COOKIE]
-
-			if (error) {
-				clearOAuthCookies()
-				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: error, provider }))
-			}
-			if (!code) {
-				clearOAuthCookies()
-				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'no_code', provider }))
-			}
-			if (!state || !storedState || state !== storedState) {
-				clearOAuthCookies()
-				return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'invalid_state', provider }))
-			}
-
-			clearOAuthCookies()
-
-			const tokenData = await exchangeCodeForToken(provider, code, request)
-			const accessToken = tokenData.access_token
-			if (!accessToken) throw new Error('Missing access token')
-
-			const rawProfile = await fetchOAuthProfile(provider, accessToken)
-			const profile = mapOAuthProfile(provider, rawProfile)
-			const result = await userService.handleOAuthLogin(profile)
-
-			setCookies(reply, {
-				token: result.token,
-				email: result.user.email,
-				uid: result.user.userId,
-				uuid: result.user.uuid,
+			const tokenResponse = await fetch(config.tokenUrl, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded',
+				},
+				body: new URLSearchParams(config.buildTokenRequestBody(code, {
+					clientId,
+					clientSecret,
+					redirectUri,
+				})),
 			})
 
-			return reply.redirect(buildRedirect(storedReturnUrl, '/', {
-				oauth: 'success',
+			if (!tokenResponse.ok) {
+				return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'Failed to exchange authorization code' })
+			}
+
+			const tokenData = await tokenResponse.json()
+			if (!tokenData?.access_token) {
+				return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'Invalid token response' })
+			}
+
+			const profileData = await config.fetchUserProfile(tokenData)
+			const mappedProfile = config.mapProfile(profileData)
+			if (!mappedProfile?.providerId) {
+				return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'Missing provider identifier' })
+			}
+			if (!mappedProfile?.email) {
+				return sendOAuthResult(reply, request, { success: false, provider, mode, message: 'Email not provided by provider' })
+			}
+
+			let linkUid: number | undefined
+			if (mode === 'link') {
+				try {
+					const context = await resolveAuthContext(request)
+					linkUid = context.uid
+				} catch {
+					mode = 'login'
+				}
+			}
+
+			let user
+			let token: string | undefined
+			if (mode === 'link' && linkUid) {
+				const result = await userService.linkOAuthAccount(linkUid, {
+					provider,
+					providerId: mappedProfile.providerId,
+					email: mappedProfile.email,
+					name: mappedProfile.name,
+					avatar: mappedProfile.avatar,
+				})
+				user = result.user
+				token = result.token
+			} else {
+				const loginResult = await userService.handleOAuthLogin({
+					provider,
+					providerId: mappedProfile.providerId,
+					email: mappedProfile.email,
+					name: mappedProfile.name,
+					avatar: mappedProfile.avatar,
+				})
+				if ('requireTotp' in loginResult && loginResult.requireTotp) {
+					return sendOAuthResult(reply, request, { success: false, provider, mode, requireTotp: true, totpToken: loginResult.totpToken, message: 'totp_required' })
+				}
+				user = loginResult.user
+				token = loginResult.token
+				mode = 'login'
+			}
+
+			if (token) {
+				setCookies(reply, { token, email: user.email, uid: user.userId, uuid: user.uuid })
+			}
+			return sendOAuthResult(reply, request, {
+				success: true,
 				provider,
-				new: result.isNewUser ? '1' : undefined,
-			}))
-		} catch (reason: any) {
-			console.error(`${providerParam} oauth callback error:`, reason)
-			clearOAuthCookies()
-			return reply.redirect(buildRedirect(storedReturnUrl, '/auth/error', { oauth: 'internal_error', provider }))
+				mode,
+				user: {
+					uid: user.userId,
+					email: user.email,
+					username: user.username,
+				},
+			})
+		} catch (err: any) {
+			console.error('OAuth callback error:', err)
+			const rawMessage = typeof err?.message === 'string' ? err.message : undefined
+			const friendlyMessages: Record<string, string> = {
+				EMAIL_MISMATCH: 'Email address from provider does not match your account.',
+				OAUTH_ACCOUNT_IN_USE: 'This provider account is already linked to another user.',
+			}
+			const message = rawMessage && friendlyMessages[rawMessage] ? friendlyMessages[rawMessage] : (rawMessage || 'OAuth callback failed')
+			return sendOAuthResult(reply, request, { success: false, provider, mode, message })
 		}
 	},
 
-	oauthProviders: async () => {
-		const available = Object.fromEntries(
-			OAUTH_PROVIDERS.map(provider => [provider, isProviderConfigured(provider)])
-		) as Record<OAuthProvider, boolean>
-		return { success: true, available }
+	// DELETE /user/oauth/:provider - RBAC protected
+	unlinkOAuthProvider: async (request: FastifyRequest, reply: FastifyReply) => {
+		const provider = ((request.params as any)?.provider || '').toLowerCase() as OAuthProvider
+		if (!oauthConfigs[provider]) {
+			return { success: false, message: 'Unsupported provider' }
+		}
+		try {
+			const { uid } = await resolveAuthContext(request)
+			const result = await userService.unlinkOAuthAccount(uid, provider)
+			setCookies(reply, { token: result.token, email: result.user.email, uid: result.user.userId, uuid: result.user.uuid })
+			return { success: true }
+		} catch (error: any) {
+			console.error('Unlink OAuth provider error:', error)
+			return { success: false, message: error?.message || 'Failed to unlink provider' }
+		}
 	},
 
 	// POST /user/self - RBAC protected via preHandler
@@ -403,6 +497,7 @@ export const UserController = {
 				success: true,
 				result: {
 					uid: user.userId,
+					uuid: user.uuid,
 					email: user.email,
 					roles: user.roles,
 					username: user.username,
@@ -412,11 +507,35 @@ export const UserController = {
 					gender: (user as any).gender || '',
 					signature: (user as any).bio || '',
 					label: (user as any).label || [],
-					authenticatorType: (user as any).twoFactorType || (user as any).authenticatorType || 'none'
+					authenticatorType: user.is2FAEnabled ? (user.twoFactorType || 'none') : 'none',
+					oauthAccounts: (Array.isArray((user as any).oauthAccounts) ? (user as any).oauthAccounts : []).map((account: any) => ({
+						provider: account.provider,
+						providerId: account.providerId,
+						email: account.email,
+						name: account.name,
+						avatar: account.avatar,
+						linkedAt: account.linkedAt ? new Date(account.linkedAt).getTime() : undefined,
+					})),
 				}
 			}
 		} catch {
 			return { success: false, message: 'Invalid session' }
+		}
+	},
+
+	// GET /user/publicProfile - no auth required
+	publicProfile: async (request: FastifyRequest) => {
+		const uid = Number((request.query as any)?.uid)
+		if (!uid) return { success: false, message: 'Missing uid' }
+		try {
+			const profile = await userService.getPublicProfile(uid)
+			if (!profile) {
+				return { success: false, message: 'User not found' }
+			}
+			return { success: true, result: profile }
+		} catch (error) {
+			console.error('Public profile error:', error)
+			return { success: false, message: 'Failed to fetch user profile' }
 		}
 	},
 

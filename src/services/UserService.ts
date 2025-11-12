@@ -19,17 +19,16 @@ const BACKUP_CODE_COUNT = 5
 const BACKUP_CODE_LENGTH = 8
 const RECOVERY_CODE_LENGTH = 16
 const BACKUP_CODE_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const RANDOM_PASSWORD_CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 const PROVIDERS = ['google', 'discord', 'yandex'] as const
 export type OAuthProvider = typeof PROVIDERS[number]
 export type OAuthProfile = {
 	provider: OAuthProvider
 	providerId: string
-	email?: string
-	name?: string
-	avatar?: string
+	email?: string | undefined
+	name?: string | undefined
+	avatar?: string | undefined
 }
-
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 function generateNumericCode(length = 6): string {
 	const min = 10 ** (length - 1)
@@ -51,60 +50,67 @@ export class UserService {
 		return Array.from({ length: count }, () => this.generateRandomCode(BACKUP_CODE_LENGTH))
 	}
 
-	private normalizeEmail(email?: string) {
-		return email?.trim().toLowerCase()
+	private escapeRegExp(input: string) {
+		return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 	}
 
 	private async findUserByEmailInsensitive(email: string) {
-		const normalized = email.trim()
-		return UserModel.findOne({ email: { $regex: `^${escapeRegExp(normalized)}$`, $options: 'i' } })
+		return UserModel.findOne({ email: { $regex: `^${this.escapeRegExp(email)}$`, $options: 'i' } })
 	}
 
-	private async findUserByOAuth(provider: OAuthProvider, providerId: string) {
-		return UserModel.findOne({ 'oauthAccounts.provider': provider, 'oauthAccounts.providerId': providerId })
+	private sanitizeUsernameCandidate(input: string) {
+		const normalized = input
+			.normalize('NFKD')
+			.replace(/[\u0300-\u036f]/g, '')
+			.replace(/[^a-zA-Z0-9_]+/g, '_')
+			.replace(/^_+|_+$/g, '')
+			.toLowerCase()
+		if (!normalized) return `user`
+		return normalized.slice(0, 24)
 	}
 
-	private async ensureOAuthAccountAvailable(provider: OAuthProvider, providerId: string, excludeUserId?: number) {
-		const query: any = {
-			'oauthAccounts.provider': provider,
-			'oauthAccounts.providerId': providerId,
-		}
-		if (excludeUserId !== undefined) {
-			query.userId = { $ne: excludeUserId }
-		}
-		const existing = await UserModel.findOne(query)
-		if (existing) {
-			throw new Error('OAUTH_ACCOUNT_ALREADY_LINKED')
-		}
-	}
-
-	private sanitizeUsername(input: string): string {
-		const base = input.normalize().replace(/[^a-zA-Z0-9]+/g, '').slice(0, 20) || `user${Date.now()}`
-		return base.toLowerCase()
-	}
-
-	private async generateUniqueUsername(base: string): Promise<string> {
-		let candidate = this.sanitizeUsername(base)
-		let attempt = 0
-		while (await UserModel.findOne({ username: candidate })) {
-			attempt += 1
-			candidate = `${this.sanitizeUsername(base)}${attempt}`
+	private async generateUniqueUsername(base: string) {
+		const sanitized = this.sanitizeUsernameCandidate(base)
+		let candidate = sanitized || 'user'
+		let suffix = 0
+		while (await UserModel.exists({ username: candidate })) {
+			suffix += 1
+			candidate = `${sanitized || 'user'}${suffix}`
 		}
 		return candidate
 	}
 
-	private generateRandomString(length = 32) {
-		return crypto.randomBytes(length).toString('hex')
-	}
-
-	private formatOAuthProfile(profile: OAuthProfile) {
+	private createOAuthAccountEntry(profile: OAuthProfile, email: string) {
 		return {
 			provider: profile.provider,
 			providerId: profile.providerId,
-			email: this.normalizeEmail(profile.email),
-			name: profile.name,
-			avatar: profile.avatar,
+			email,
+			name: profile.name ?? undefined,
+			avatar: profile.avatar ?? undefined,
 			linkedAt: new Date(),
+		}
+	}
+
+	private createOauthTotpToken(params: { uid: number; uuid: string; provider: OAuthProvider; email: string }) {
+		const payload = {
+			purpose: 'oauth-totp',
+			uid: params.uid,
+			uuid: params.uuid,
+			provider: params.provider,
+			email: params.email,
+		}
+		return jwt.sign(payload, ENV.JWT_SECRET as unknown as jwt.Secret, { expiresIn: '5m' })
+	}
+
+	async getPublicProfile(uid: number) {
+		const user = await UserModel.findOne({ userId: uid }, { userId: 1, username: 1, nickname: 1, avatar: 1, bio: 1 }).lean()
+		if (!user) return null
+		return {
+			uid: user.userId,
+			username: user.username,
+			userNickname: user.nickname ?? '',
+			avatar: user.avatar ?? '',
+			bio: user.bio ?? '',
 		}
 	}
 
@@ -637,72 +643,173 @@ export class UserService {
 
 	async getTwoFactorStatusByEmail(email: string) {
 		const trimmedEmail = email.trim()
-		const user = await this.findUserByEmailInsensitive(trimmedEmail)
+		const user = await UserModel.findOne({ email: new RegExp(`^${trimmedEmail}$`, 'i') })
 		if (!user) return { have2FA: false as const, type: 'none' as const }
 		return this.getTwoFactorStatusByUid(user.userId)
 	}
 
-	async handleOAuthLogin(profile: OAuthProfile) {
-		const normalizedEmail = profile.email ? this.normalizeEmail(profile.email) : undefined
-		let user = await this.findUserByOAuth(profile.provider, profile.providerId)
-		let isNewUser = false
+	async handleOAuthLogin(profile: OAuthProfile & { email: string }): Promise<
+		| { user: any; token: string; requireTotp?: false }
+		| { requireTotp: true; totpToken: string }
+	> {
+		const normalizedEmail = profile.email.toLowerCase()
 
-		if (!user && normalizedEmail) {
+		let user = await UserModel.findOne({
+			oauthAccounts: {
+				$elemMatch: { provider: profile.provider, providerId: profile.providerId },
+			},
+		})
+
+		if (!user) {
 			user = await this.findUserByEmailInsensitive(normalizedEmail)
+			if (user) {
+				const alreadyLinked = user.oauthAccounts?.some(account => account.provider === profile.provider)
+				if (!alreadyLinked) {
+					if (!user.oauthAccounts || user.oauthAccounts.length === 0) {
+						user.oauthAccounts = [this.createOAuthAccountEntry(profile, normalizedEmail)] as any
+					} else {
+						(user.oauthAccounts as any).push(this.createOAuthAccountEntry(profile, normalizedEmail))
+					}
+				}
+			}
 		}
 
 		if (!user) {
-			isNewUser = true
-			const usernameBase = normalizedEmail?.split('@')[0] ?? `${profile.provider}_user`
+			const userId = await getNextSequence('userId')
+			const uuid = uuidv4()
+			const usernameBase = profile.name || normalizedEmail.split('@')[0] || 'user'
 			const username = await this.generateUniqueUsername(usernameBase)
-			const randomPassword = this.generateRandomString(16)
-			const passwordHash = await bcrypt.hash(randomPassword, ENV.BCRYPT_ROUNDS)
-			const fallbackEmail = normalizedEmail ?? `${profile.provider}-${profile.providerId}@oauth.mtlbooks`
-			const now = new Date()
+			const passwordSeed = this.generateRandomCode(32, RANDOM_PASSWORD_CHARSET)
+			const passwordHash = await bcrypt.hash(passwordSeed, ENV.BCRYPT_ROUNDS)
+
 			user = await UserModel.create({
-				userId: await getNextSequence('userId'),
-				uuid: uuidv4(),
+				userId,
+				uuid,
 				username,
-				nickname: profile.name || username,
-				email: fallbackEmail,
-				isEmailVerified: !!normalizedEmail,
+				email: normalizedEmail,
 				password: passwordHash,
-				avatar: profile.avatar ?? undefined,
+				nickname: profile.name || username,
+				avatar: profile.avatar,
+				isEmailVerified: true,
+				twoFactorType: 'none',
 				roles: ['user'],
 				permissions: [],
-				is2FAEnabled: false,
-				twoFactorType: 'none',
-				lastLoginAt: now,
-				oauthAccounts: [this.formatOAuthProfile(profile)],
-			})
+				oauthAccounts: [this.createOAuthAccountEntry(profile, normalizedEmail)],
+				lastLoginAt: new Date(),
+			} as any)
+
 			await RbacUserBindingModel.updateOne(
-				{ userId: user.userId, uuid: user.uuid },
-				{ $setOnInsert: { roles: user.roles, permissions: [] } },
+				{ userId, uuid },
+				{ $setOnInsert: { roles: ['user'], permissions: [] } },
 				{ upsert: true }
 			)
 		} else {
-			await this.ensureOAuthAccountAvailable(profile.provider, profile.providerId, user.userId)
-			const accounts = Array.isArray(user.oauthAccounts)
-				? user.oauthAccounts.map((account: any) => (typeof account.toObject === 'function' ? account.toObject() : account))
-				: []
-			const entry = this.formatOAuthProfile(profile)
-			const existingIndex = accounts.findIndex((account: any) => account.provider === profile.provider)
-			if (existingIndex >= 0) accounts[existingIndex] = entry
-			else accounts.push(entry)
-			user.set('oauthAccounts', accounts)
-			if (!user.avatar && profile.avatar) user.avatar = profile.avatar
-			if (normalizedEmail && !user.email) {
-				user.email = normalizedEmail
-				user.isEmailVerified = true
+			if (!user.oauthAccounts?.some(account => account.provider === profile.provider && account.providerId === profile.providerId)) {
+				if (!user.oauthAccounts || user.oauthAccounts.length === 0) {
+					user.oauthAccounts = [this.createOAuthAccountEntry(profile, normalizedEmail)] as any
+				} else {
+					(user.oauthAccounts as any).push(this.createOAuthAccountEntry(profile, normalizedEmail))
+				}
 			}
-			user.markModified('oauthAccounts')
+			if (profile.avatar && !user.avatar) {
+				user.avatar = profile.avatar
+			}
+			if (profile.name && !user.nickname) {
+				user.nickname = profile.name
+			}
+			user.isEmailVerified = true
+		}
+
+		if (user.is2FAEnabled && user.twoFactorType === 'totp' && user.totpSecret) {
+			await user.save()
+			const totpToken = this.createOauthTotpToken({ uid: user.userId, uuid: user.uuid, provider: profile.provider, email: user.email })
+			return { requireTotp: true as const, totpToken }
 		}
 
 		user.lastLoginAt = new Date()
 		await user.save()
 
 		const token = this.signToken({ uid: user.userId, uuid: user.uuid, roles: user.roles })
-		return { token, user, isNewUser }
+		return { user, token }
+	}
+
+	async linkOAuthAccount(uid: number, profile: OAuthProfile & { email: string }) {
+		const user = await UserModel.findOne({ userId: uid })
+		if (!user) throw new Error('User not found')
+
+		const normalizedEmail = profile.email.toLowerCase()
+		const existing = await UserModel.findOne({
+			oauthAccounts: {
+				$elemMatch: { provider: profile.provider, providerId: profile.providerId },
+			},
+		})
+		if (existing && existing.userId !== uid) {
+			throw new Error('OAUTH_ACCOUNT_IN_USE')
+		}
+
+		const emailMatches = user.email.toLowerCase() === normalizedEmail
+		if (!emailMatches) {
+			throw new Error('EMAIL_MISMATCH')
+		}
+
+		const alreadyLinked = user.oauthAccounts?.some(
+			account => account.provider === profile.provider
+		)
+		if (!alreadyLinked) {
+			if (!user.oauthAccounts || user.oauthAccounts.length === 0) {
+				user.oauthAccounts = [this.createOAuthAccountEntry(profile, normalizedEmail)] as any
+			} else {
+				(user.oauthAccounts as any).push(this.createOAuthAccountEntry(profile, normalizedEmail))
+			}
+		}
+
+		if (profile.avatar && !user.avatar) {
+			user.avatar = profile.avatar
+		}
+		if (profile.name && !user.nickname) {
+			user.nickname = profile.name
+		}
+		user.isEmailVerified = true
+		await user.save()
+
+		const token = this.signToken({ uid: user.userId, uuid: user.uuid, roles: user.roles })
+		return { user, token }
+	}
+
+	async unlinkOAuthAccount(uid: number, provider: OAuthProvider) {
+		const user = await UserModel.findOne({ userId: uid })
+		if (!user) throw new Error('User not found')
+		const accounts = user.oauthAccounts || []
+		if (!accounts.some(account => account.provider === provider)) {
+			throw new Error('OAUTH_ACCOUNT_NOT_FOUND')
+		}
+		if (accounts.length <= 1 && !user.password) {
+			throw new Error('CANNOT_REMOVE_LAST_LOGIN_METHOD')
+		}
+		user.oauthAccounts = accounts.filter(account => account.provider !== provider) as any
+		await user.save()
+		const token = this.signToken({ uid: user.userId, uuid: user.uuid, roles: user.roles })
+		return { user, token }
+	}
+
+	async finalizeOAuthTotp(params: { totpToken: string; clientOtp: string }) {
+		let payload: any
+		try {
+			payload = jwt.verify(params.totpToken, ENV.JWT_SECRET as unknown as jwt.Secret)
+		} catch {
+			throw new Error('Invalid or expired token')
+		}
+		if (!payload || payload.purpose !== 'oauth-totp') throw new Error('Invalid token')
+		const user = await UserModel.findOne({ userId: payload.uid, uuid: payload.uuid })
+		if (!user || !user.totpSecret) throw new Error('User not found or TOTP not set')
+
+		const ok = totpService.verify(params.clientOtp, user.totpSecret)
+		if (!ok) throw new Error('Invalid TOTP code')
+
+		user.lastLoginAt = new Date()
+		await user.save()
+		const token = this.signToken({ uid: user.userId, uuid: user.uuid, roles: user.roles })
+		return { user, token }
 	}
 
 	// Admin
