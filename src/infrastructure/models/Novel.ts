@@ -19,6 +19,7 @@ const NovelSchema = new Schema({
 	views: { type: Number, default: 0, index: true },
 	favoritesCount: { type: Number, default: 0, index: true },
 	chaptersCount: { type: Number, default: 0, index: true },
+	wordCount: { type: Number, default: 0, index: true },
 	upvoteCount: { type: Number, default: 0, required: true, index: true },
 	downvoteCount: { type: Number, default: 0, required: true, index: true },
 	
@@ -58,6 +59,7 @@ NovelSchema.pre('save', function(next) {
 	if (novel.views === undefined) novel.views = 0;
 	if (novel.favoritesCount === undefined) novel.favoritesCount = 0;
 	if (novel.chaptersCount === undefined) novel.chaptersCount = 0;
+	if (novel.wordCount === undefined) novel.wordCount = 0;
 	if (novel.upvoteCount === undefined) novel.upvoteCount = 0;
 	if (novel.downvoteCount === undefined) novel.downvoteCount = 0;
 
@@ -96,6 +98,7 @@ NovelSchema.methods = {
 			views: novel.views || 0,
 			favoritesCount: novel.favoritesCount || 0,
 			chaptersCount: novel.chaptersCount || 0,
+			wordCount: novel.wordCount || 0,
 			upvoteCount: novel.upvoteCount || 0,
 			downvoteCount: novel.downvoteCount || 0,
 			source: novel.source || [],

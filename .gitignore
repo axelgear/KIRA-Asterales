@@ -29,7 +29,7 @@ desktop.ini
 # Real-time generated files
 src/types/auto-*.d.ts
 
-src/scripts/*
+#src/scripts/*
 i8n/
 
 #env

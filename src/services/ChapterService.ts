@@ -260,6 +260,15 @@ export const ChapterService = {
 			console.warn(`⚠️ Failed to update novel chapter info for novel ${params.novelId}:`, error)
 		}
 
+		// Update novel's total word count
+		try {
+			const { NovelWordCountService } = await import('./NovelWordCountService.js')
+			await NovelWordCountService.recalculateAfterChapterChange(params.novelId)
+			console.log(`🔢 Updated novel word count for novel ${params.novelId}`)
+		} catch (error) {
+			console.warn(`⚠️ Failed to update novel word count for novel ${params.novelId}:`, error)
+		}
+
 		// Cache the new chapter
 		try {
 			const cacheKey = `chapter:${uuid}`
@@ -296,6 +305,17 @@ export const ChapterService = {
 		// Rebuild single-doc list
 		if (updated?.novelUuid && updated?.novelId) {
 			await ChapterListSearchService.rebuildNovel(updated.novelUuid, updated.novelId)
+		}
+
+		// Update novel's total word count if content was changed
+		if (updated?.novelId && patch.content) {
+			try {
+				const { NovelWordCountService } = await import('./NovelWordCountService.js')
+				await NovelWordCountService.recalculateAfterChapterChange(updated.novelId)
+				console.log(`🔢 Updated novel word count for novel ${updated.novelId}`)
+			} catch (error) {
+				console.warn(`⚠️ Failed to update novel word count for novel ${updated.novelId}:`, error)
+			}
 		}
 
 		// Invalidate and recache the updated chapter
@@ -340,6 +360,17 @@ export const ChapterService = {
 		// Rebuild single-doc list
 		if (chapter?.novelUuid && chapter?.novelId) {
 			await ChapterListSearchService.rebuildNovel(chapter.novelUuid, chapter.novelId)
+		}
+
+		// Update novel's total word count
+		if (chapter?.novelId) {
+			try {
+				const { NovelWordCountService } = await import('./NovelWordCountService.js')
+				await NovelWordCountService.recalculateAfterChapterChange(chapter.novelId)
+				console.log(`🔢 Updated novel word count for novel ${chapter.novelId}`)
+			} catch (error) {
+				console.warn(`⚠️ Failed to update novel word count for novel ${chapter.novelId}:`, error)
+			}
 		}
 		
 		return { success: true }
