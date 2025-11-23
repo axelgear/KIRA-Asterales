@@ -8,6 +8,7 @@ const ReadingListSchema = new Schema({
 	visibility: { type: String, default: 'private', index: true }, // private | public | unlisted
 	itemsCount: { type: Number, default: 0, index: true },
 	coverNovelId: { type: Number, default: null },
+	coverImages: { type: [String], default: [] }, // First 4 novel cover images for preview
 	upvoteCount: { type: Number, default: 0, required: true, index: true },
 	downvoteCount: { type: Number, default: 0, required: true, index: true }
 }, { timestamps: true, versionKey: false, collection: 'reading-lists' })

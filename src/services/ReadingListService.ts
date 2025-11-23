@@ -23,11 +23,47 @@ export const ReadingListService = {
 		const items = await ReadingListModel.find({ ownerUserUuid }).sort({ updatedAt: -1 }).lean()
 		return items
 	},
-	async publicLists(ownerUserUuid?: string) {
-		const query: any = { visibility: 'public' }
+	async publicLists(ownerUserUuid?: string, page = 1, pageSize = 24, sortKey: 'recent' | 'name' | 'items' = 'recent', sortDirection: 'ASC' | 'DESC' = 'DESC') {
+		const query: any = { 
+			visibility: 'public',
+			itemsCount: { $gt: 0 } // Only show lists with at least 1 item
+		}
 		if (ownerUserUuid) query.ownerUserUuid = ownerUserUuid
-		const items = await ReadingListModel.find(query).sort({ updatedAt: -1 }).lean()
-		return items
+		
+		// Determine sort field and direction
+		let sortField: any = { updatedAt: -1 }
+		const dir = sortDirection === 'ASC' ? 1 : -1
+		
+		switch (sortKey) {
+			case 'name':
+				sortField = { name: dir }
+				break
+			case 'items':
+				sortField = { itemsCount: dir }
+				break
+			case 'recent':
+			default:
+				sortField = { updatedAt: dir }
+				break
+		}
+		
+		const skip = (page - 1) * pageSize
+		const [items, total] = await Promise.all([
+			ReadingListModel.find(query)
+				.sort(sortField)
+				.skip(skip)
+				.limit(pageSize)
+				.lean(),
+			ReadingListModel.countDocuments(query)
+		])
+		
+		return {
+			items,
+			total,
+			totalPages: Math.ceil(total / pageSize),
+			page,
+			pageSize
+		}
 	},
 	async addItem(ownerUserUuid: string, listUuid: string, novel: { novelSlug: string; novelUuid: string }) {
 		// Verify ownership
@@ -36,6 +72,10 @@ export const ReadingListService = {
 		const itemId = await getNextSequence('readingListItemId')
 		await ReadingListItemModel.updateOne({ listUuid, novelSlug: novel.novelSlug }, { $setOnInsert: { itemId, novelUuid: novel.novelUuid } }, { upsert: true })
 		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: 1 } })
+		
+		// Update cover images (first 4)
+		await this.updateCoverImages(listUuid)
+		
 		return { success: true }
 	},
 	async removeItem(ownerUserUuid: string, listUuid: string, novelSlug: string) {
@@ -43,6 +83,10 @@ export const ReadingListService = {
 		if (!list) throw new Error('List not found')
 		await ReadingListItemModel.deleteOne({ listUuid, novelSlug })
 		await ReadingListModel.updateOne({ uuid: listUuid }, { $inc: { itemsCount: -1 } })
+		
+		// Update cover images (first 4)
+		await this.updateCoverImages(listUuid)
+		
 		return { success: true }
 	},
 	async listItems(listUuid: string, currentUserUuid?: string, page = 1, pageSize = 50) {
@@ -106,6 +150,39 @@ export const ReadingListService = {
 				downvoteCount: list.downvoteCount || 0,
 				isOwner
 			}
+		}
+	},
+	
+	async updateCoverImages(listUuid: string) {
+		try {
+			// Get first 4 items
+			const items = await ReadingListItemModel.find({ listUuid })
+				.sort({ createdAt: -1 })
+				.limit(4)
+				.lean()
+			
+			// Get cover images from novels
+			const coverImages: string[] = []
+			for (const item of items) {
+				try {
+					const novel = await NovelModel.findOne({ slug: item.novelSlug })
+						.select('coverImg')
+						.lean()
+					if (novel?.coverImg) {
+						coverImages.push(novel.coverImg)
+					}
+				} catch (err) {
+					// Ignore individual errors
+				}
+			}
+			
+			// Update list with cover images
+			await ReadingListModel.updateOne(
+				{ uuid: listUuid },
+				{ $set: { coverImages } }
+			)
+		} catch (error) {
+			console.error('Failed to update cover images:', error)
 		}
 	}
 } 
