@@ -323,11 +323,24 @@ export class UserDataMigrator {
 		console.log('\n📑 Starting bookmarks migration to favorites...')
 		
 		if (!this.pgClient) throw new Error('PostgreSQL client not initialized')
+		
+		/* Drop old userId index if it exists (from old schema) */
+		try {
+			const indexes = await this.mongoDb.collection('favorites').indexes()
+			const oldIndex = indexes.find((idx: any) => idx.name === 'userId_1_novelId_1')
+			if (oldIndex) {
+				console.log('🗑️  Dropping old userId_1_novelId_1 index...')
+				await this.mongoDb.collection('favorites').dropIndex('userId_1_novelId_1')
+				console.log('✅ Old index dropped')
+			}
+		} catch (error) {
+			console.warn('⚠️  Could not drop old index (might not exist):', error)
+		}
 
 		/* Get users with bookmarks */
 		const result = await this.pgClient.query(
 			`SELECT id, bookmarks, created_at FROM "${this.dbConfig.postgres.schema}".users 
-			WHERE bookmarks IS NOT NULL AND bookmarks != '{}'::json 
+			WHERE bookmarks IS NOT NULL AND bookmarks != '{}'::jsonb 
 			AND deleted_at IS NULL`
 		)
 
@@ -347,22 +360,33 @@ export class UserDataMigrator {
 					continue
 				}
 
-				/* Parse bookmarks JSON */
-				const bookmarks = typeof user.bookmarks === 'string' 
-					? JSON.parse(user.bookmarks) 
-					: user.bookmarks
+			/* Parse bookmarks JSON */
+			const bookmarks = typeof user.bookmarks === 'string' 
+				? JSON.parse(user.bookmarks) 
+				: user.bookmarks
 
-				/* Handle various bookmark formats */
-				let novelIds: number[] = []
-				
-				if (Array.isArray(bookmarks)) {
-					novelIds = bookmarks.filter(id => typeof id === 'number')
-				} else if (typeof bookmarks === 'object') {
-					/* Extract novel IDs from object (e.g., { novelId1: true, novelId2: true }) */
+			/* Handle various bookmark formats */
+			let novelIds: number[] = []
+			
+			if (Array.isArray(bookmarks)) {
+				// Direct array: [1, 2, 3]
+				novelIds = bookmarks.filter(id => typeof id === 'number')
+			} else if (typeof bookmarks === 'object' && bookmarks !== null) {
+				// Object with bookmarks property: { bookmarks: [1, 2, 3] }
+				if (Array.isArray(bookmarks.bookmarks)) {
+					novelIds = bookmarks.bookmarks.filter((id: any) => typeof id === 'number')
+				}
+				// Object with list property: { list: [1, 2, 3] }
+				else if (Array.isArray(bookmarks.list)) {
+					novelIds = bookmarks.list.filter((id: any) => typeof id === 'number')
+				}
+				// Object as map: { "1": true, "2": true }
+				else {
 					novelIds = Object.keys(bookmarks)
 						.map(key => parseInt(key))
 						.filter(id => !isNaN(id))
 				}
+			}
 
 				/* Create favorites for each bookmark */
 				for (const novelId of novelIds) {

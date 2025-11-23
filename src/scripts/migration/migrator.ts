@@ -165,13 +165,21 @@ export class NovelMigrator {
   private async getPgNovels(limit: number, offset: number, startFromId: number = 0): Promise<PgNovel[]> {
     if (!this.pgClient) throw new Error('PostgreSQL client not initialized')
 
-    const query = `
+    let query = `
       SELECT * FROM "${this.dbConfig.postgres.schema}".novels 
-      WHERE deleted_at IS NULL AND published = true AND id > $3
+      WHERE deleted_at IS NULL AND published = true AND id > $1
       ORDER BY id 
-      LIMIT $1 OFFSET $2
     `
-    const result = await this.pgClient.query(query, [limit, offset, startFromId])
+    
+    const params: any[] = [startFromId]
+    
+    // Only add LIMIT if limit > 0
+    if (limit > 0) {
+      query += ` LIMIT $2 OFFSET $3`
+      params.push(limit, offset)
+    }
+    
+    const result = await this.pgClient.query(query, params)
     return result.rows
   }
 
@@ -529,16 +537,22 @@ export class NovelMigrator {
           console.warn(`⚠️ Failed to read progress file, starting from beginning: ${err}`)
         }
       }
-
-      console.log(`📊 Found ${totalNovels} novels, migrating ${novelsToMigrate}`)
+      
+      const remainingNovels = novelsToMigrate - resumeOffset
+      console.log(`📊 Found ${totalNovels} total novels`)
       if (startFromNovelId > 0) {
         console.log(`🔄 Resuming from novel ID > ${startFromNovelId}`)
+        console.log(`📊 Already migrated: ${migratedNovels} novels`)
+        console.log(`📊 Remaining to migrate: ${remainingNovels} novels`)
+      } else {
+        console.log(`📊 Migrating: ${novelsToMigrate} novels`)
       }
       console.log('🔄 Processing novels one by one with individual Elasticsearch indexing...')
 
       // Get all novels to migrate (we'll process them one by one)
       // If resuming, skip already migrated novels by ID
-      const pgNovels = await this.getPgNovels(novelsToMigrate - resumeOffset, 0, startFromNovelId)
+      // Fetch all remaining novels (0 = no limit)
+      const pgNovels = await this.getPgNovels(0, 0, startFromNovelId)
       
       for (let i = 0; i < pgNovels.length; i++) {
         const pgNovel = pgNovels[i]
