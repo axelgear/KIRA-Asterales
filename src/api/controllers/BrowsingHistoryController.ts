@@ -302,5 +302,61 @@ export const BrowsingHistoryController = {
 		}
 	},
 
+	// POST /history/bulk-sync - Bulk sync local history entries with server
+	bulkSync: async (request: FastifyRequest) => {
+		try {
+			// Validate JWT token and get secure userUuid
+			const authResult = validateJwtToken(request)
+			if (!authResult.isValid) {
+				return {
+					success: false,
+					message: `Authentication required - ${authResult.error || 'invalid or missing token'}`
+				}
+			}
+
+			const body = request.body as any
+			const { localEntries } = body
+
+			const userId = authResult.userId!
+			const userUuid = authResult.userUuid!
+
+			console.log('🔄 Bulk sync request:', { userUuid, userId, entriesCount: localEntries?.length || 0 })
+
+			if (!Array.isArray(localEntries)) {
+				return {
+					success: false,
+					message: 'localEntries must be an array'
+				}
+			}
+
+			if (localEntries.length === 0) {
+				return {
+					success: true,
+					message: 'No entries to sync',
+					result: {
+						synced: 0,
+						skipped: 0,
+						failed: 0,
+						errors: []
+					}
+				}
+			}
+
+			const result = await BrowsingHistoryService.bulkSyncHistory(userUuid, localEntries)
+
+			return {
+				success: true,
+				message: `Bulk sync completed: ${result.synced} synced, ${result.skipped} skipped, ${result.failed} failed`,
+				result
+			}
+		} catch (error) {
+			console.error('❌ Error during bulk sync:', error)
+			return {
+				success: false,
+				message: 'Error during bulk sync',
+				error: error instanceof Error ? error.message : String(error)
+			}
+		}
+	},
 
 }

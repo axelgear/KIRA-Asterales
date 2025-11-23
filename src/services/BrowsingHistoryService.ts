@@ -318,4 +318,142 @@ export const BrowsingHistoryService = {
       };
     }
   },
+
+  // Bulk sync local history entries with server (merge strategy)
+  async bulkSyncHistory(userUuid: string, localEntries: Array<{
+    novelSlug: string;
+    chapterUuid: string;
+    chapterTitle?: string;
+    chapterSequence?: number;
+    progress?: number;
+    device?: string;
+    lastReadAt?: string | Date;
+  }>) {
+    try {
+      console.log(`🔄 Bulk syncing ${localEntries.length} local history entries for user ${userUuid}`);
+
+      const results = {
+        synced: 0,
+        skipped: 0,
+        failed: 0,
+        errors: [] as string[],
+      };
+
+      // Process entries in batches to avoid overwhelming the database
+      const batchSize = 50;
+      for (let i = 0; i < localEntries.length; i += batchSize) {
+        const batch = localEntries.slice(i, i + batchSize);
+        
+        await Promise.all(
+          batch.map(async (entry) => {
+            try {
+              const { novelSlug, chapterUuid, chapterTitle, chapterSequence, progress, device, lastReadAt } = entry;
+
+              // Check if server already has this entry
+              const existing = await BrowsingHistoryModel.findOne({
+                userUuid,
+                novelSlug,
+              }).lean();
+
+              const localReadAt = lastReadAt ? new Date(lastReadAt) : new Date();
+
+              // Merge strategy: keep the entry with the most recent lastReadAt
+              if (existing) {
+                const existingReadAt = new Date(existing.lastReadAt);
+                
+                // If local entry is newer, update server
+                if (localReadAt > existingReadAt) {
+                  // Get chapter details if not provided
+                  let finalChapterTitle = chapterTitle;
+                  let finalChapterSequence = chapterSequence;
+
+                  if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
+                    const chapter = await ChapterModel.findOne({ uuid: chapterUuid })
+                      .select("title sequence")
+                      .lean();
+                    
+                    if (chapter) {
+                      finalChapterTitle = finalChapterTitle || chapter.title;
+                      finalChapterSequence = finalChapterSequence ?? chapter.sequence;
+                    }
+                  }
+
+                  await BrowsingHistoryModel.findOneAndUpdate(
+                    { userUuid, novelSlug },
+                    {
+                      $set: {
+                        chapterUuid,
+                        chapterTitle: finalChapterTitle || existing.chapterTitle,
+                        chapterSequence: finalChapterSequence ?? existing.chapterSequence,
+                        progress: progress ?? existing.progress,
+                        device: device || existing.device,
+                        lastReadAt: localReadAt,
+                        updatedAt: new Date(),
+                      },
+                    }
+                  );
+
+                  results.synced++;
+                  console.log(`✅ Updated server entry for ${novelSlug} (local was newer)`);
+                } else {
+                  results.skipped++;
+                  console.log(`⏭️ Skipped ${novelSlug} (server entry is newer or equal)`);
+                }
+              } else {
+                // Entry doesn't exist on server, create it
+                // Get chapter details if not provided
+                let finalChapterTitle = chapterTitle;
+                let finalChapterSequence = chapterSequence;
+
+                if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
+                  const chapter = await ChapterModel.findOne({ uuid: chapterUuid })
+                    .select("title sequence")
+                    .lean();
+                  
+                  if (chapter) {
+                    finalChapterTitle = finalChapterTitle || chapter.title;
+                    finalChapterSequence = finalChapterSequence ?? chapter.sequence;
+                  }
+                }
+
+                // Only create if we have valid chapter info
+                if (finalChapterTitle && typeof finalChapterSequence === 'number') {
+                  await BrowsingHistoryModel.create({
+                    userUuid,
+                    novelSlug,
+                    chapterUuid,
+                    chapterTitle: finalChapterTitle,
+                    chapterSequence: finalChapterSequence,
+                    progress: progress ?? 0,
+                    device: device || '',
+                    lastReadAt: localReadAt,
+                  });
+
+                  results.synced++;
+                  console.log(`✅ Created new server entry for ${novelSlug}`);
+                } else {
+                  results.failed++;
+                  results.errors.push(`Missing chapter info for ${novelSlug}`);
+                  console.warn(`⚠️ Skipped ${novelSlug} - missing chapter information`);
+                }
+              }
+            } catch (error) {
+              results.failed++;
+              const errorMsg = error instanceof Error ? error.message : String(error);
+              results.errors.push(`${entry.novelSlug}: ${errorMsg}`);
+              console.error(`❌ Failed to sync entry ${entry.novelSlug}:`, error);
+            }
+          })
+        );
+      }
+
+      console.log(
+        `✅ Bulk sync complete for user ${userUuid}: ${results.synced} synced, ${results.skipped} skipped, ${results.failed} failed`
+      );
+      return results;
+    } catch (error) {
+      console.error(`❌ Error during bulk sync for user ${userUuid}:`, error);
+      throw error;
+    }
+  },
 };

@@ -15,7 +15,6 @@
 import { NovelMigrator } from './migrator.js'
 import { TaxonomyMigrator } from './taxonomy-migrator.js'
 import { UserDataMigrator } from './user-data-migrator.js'
-import { NovelWordCountService } from '../../services/NovelWordCountService.js'
 import type { MigrationConfig, DatabaseConfig } from './types.js'
 import { MongoClient } from 'mongodb'
 
@@ -54,6 +53,100 @@ const dbConfig: DatabaseConfig = {
 			username: process.env.ES_USERNAME || process.env.ELASTICSEARCH_ADMIN_USERNAME || '',
 			password: process.env.ES_PASSWORD || process.env.ELASTICSEARCH_ADMIN_PASSWORD || ''
 		}
+	}
+}
+
+/**
+ * Fix novel stats (word count and chapter count) using native MongoDB connection
+ */
+async function fixNovelStats(mongoDb: any): Promise<{
+	total: number
+	updated: number
+	failed: number
+}> {
+	try {
+		console.log('🔍 Checking novels for incorrect stats...')
+		
+		const novels = await mongoDb.collection('novels')
+			.find({})
+			.project({ novelId: 1, slug: 1, title: 1, wordCount: 1, chaptersCount: 1 })
+			.toArray()
+
+		const total = novels.length
+		let updated = 0
+		let failed = 0
+
+		console.log(`📊 Found ${total} novels to check`)
+
+		/* Process in batches */
+		const batchSize = 50
+		for (let i = 0; i < novels.length; i += batchSize) {
+			const batch = novels.slice(i, i + batchSize)
+			
+			await Promise.all(
+				batch.map(async (novel: any) => {
+					try {
+						/* Count actual chapters */
+						const actualChapterCount = await mongoDb.collection('chapters').countDocuments({
+							novelId: novel.novelId,
+							isPublished: true
+						})
+						
+						/* Calculate total word count from chapters */
+						const chapters = await mongoDb.collection('chapters')
+							.find({ novelId: novel.novelId, isPublished: true })
+							.project({ wordCount: 1 })
+							.toArray()
+
+						const totalWordCount = chapters.reduce((sum: number, chapter: any) => {
+							return sum + (chapter.wordCount || 0)
+						}, 0)
+						
+						/* Check if update is needed */
+						const needsUpdate = 
+							novel.wordCount !== totalWordCount || 
+							novel.chaptersCount !== actualChapterCount
+						
+						if (!needsUpdate) {
+							updated++
+							return
+						}
+						
+						/* Update novel */
+						const result = await mongoDb.collection('novels').updateOne(
+							{ novelId: novel.novelId },
+							{ 
+								$set: { 
+									wordCount: totalWordCount,
+									chaptersCount: actualChapterCount,
+									updatedAt: new Date()
+								} 
+							}
+						)
+
+						if (result.modifiedCount > 0) {
+							console.log(`✅ Novel ${novel.novelId} fixed: chapters ${novel.chaptersCount}→${actualChapterCount}, words ${novel.wordCount}→${totalWordCount}`)
+							updated++
+						} else {
+							updated++
+						}
+					} catch (error) {
+						console.error(`❌ Failed to fix novel ${novel.novelId}:`, error)
+						failed++
+					}
+				})
+			)
+
+			const progress = ((i + batch.length) / total * 100).toFixed(1)
+			console.log(`📈 Progress: ${progress}% (${i + batch.length}/${total})`)
+		}
+
+		console.log(`✅ Stats fix completed: ${updated} processed, ${failed} failed`)
+		
+		return { total, updated, failed }
+	} catch (error) {
+		console.error('❌ Failed to fix novel stats:', error)
+		throw error
 	}
 }
 
@@ -195,14 +288,25 @@ async function main() {
 
 		await userDataMigrator.cleanup()
 
-		/* ================== STEP 7: Update Word Counts ================== */
+		/* ================== STEP 7: Fix Novel Stats (Word Count & Chapter Count) ================== */
 		if (updateWordCounts) {
 			console.log('\n' + '='.repeat(70))
-			console.log('🔢 STEP 7: Updating Word Counts for Existing Novels')
+			console.log('🔢 STEP 7: Fixing Novel Stats (Word Count & Chapter Count)')
 			console.log('='.repeat(70))
 			
-			const wordCountResult = await NovelWordCountService.updateAllNovelWordCounts(50)
-			console.log(`✅ Word Counts: ${wordCountResult.updated}/${wordCountResult.total} updated, ${wordCountResult.failed} failed`)
+			try {
+				/* Connect to MongoDB for stats fix */
+				const mongoClient = new MongoClient(dbConfig.mongodb.uri)
+				await mongoClient.connect()
+				const mongoDb = mongoClient.db(dbConfig.mongodb.database)
+				
+				const statsResult = await fixNovelStats(mongoDb)
+				console.log(`✅ Stats Fixed: ${statsResult.updated}/${statsResult.total} novels, ${statsResult.failed} failed`)
+				
+				await mongoClient.close()
+			} catch (error) {
+				console.error('❌ Failed to fix novel stats:', error)
+			}
 		}
 
 		/* ================== Migration Complete ================== */

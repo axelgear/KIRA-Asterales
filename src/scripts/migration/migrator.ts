@@ -152,14 +152,14 @@ export class NovelMigrator {
   }
 
   /**
-   * Get novels from PostgreSQL
+   * Get novels from PostgreSQL (only published ones)
    */
   private async getPgNovels(limit: number, offset: number): Promise<PgNovel[]> {
     if (!this.pgClient) throw new Error('PostgreSQL client not initialized')
 
     const query = `
       SELECT * FROM "${this.dbConfig.postgres.schema}".novels 
-      WHERE deleted_at IS NULL 
+      WHERE deleted_at IS NULL AND published = true
       ORDER BY id 
       LIMIT $1 OFFSET $2
     `
@@ -350,17 +350,16 @@ export class NovelMigrator {
   }
 
   /**
-   * Migrate a single novel with its chapters
+   * Migrate a single novel with its chapters (or update if exists)
    */
   private async migrateNovel(pgNovel: PgNovel): Promise<{ novel: MongoNovel; chapters: MongoChapter[] }> {
     try {
       // Check if novel already exists
-      if (this.config.skipExisting) {
         const existing = await this.mongoDb.collection('novels').findOne({ novelId: pgNovel.id })
+      
         if (existing) {
-          console.log(`⏭️  Novel ${pgNovel.id} already exists, skipping`)
-          return { novel: existing as MongoNovel, chapters: [] }
-        }
+        console.log(`📝 Novel ${pgNovel.id} exists, checking for updates...`)
+        return await this.updateExistingNovel(pgNovel, existing)
       }
 
       // Transform novel
@@ -396,6 +395,86 @@ export class NovelMigrator {
   }
 
   /**
+   * Update existing novel with new data (chapters, views, word count)
+   */
+  private async updateExistingNovel(pgNovel: PgNovel, existingNovel: any): Promise<{ novel: MongoNovel; chapters: MongoChapter[] }> {
+    try {
+      const novelId = pgNovel.id
+      const novelUuid = existingNovel.uuid
+
+      // Get chapters from PostgreSQL
+      const pgChapters = await this.getPgChapters(novelId)
+      
+      // Get existing chapters from MongoDB
+      const existingChapters = await this.mongoDb.collection('chapters')
+        .find({ novelId })
+        .toArray()
+      
+      const existingChapterIds = new Set(existingChapters.map((ch: any) => ch.chapterId))
+      
+      // Find new chapters
+      const newPgChapters = pgChapters.filter(ch => !existingChapterIds.has(ch.id))
+      
+      let newChapters: MongoChapter[] = []
+      
+      if (newPgChapters.length > 0) {
+        console.log(`📚 Found ${newPgChapters.length} new chapters for novel ${novelId}`)
+        
+        // Transform new chapters
+        newChapters = newPgChapters.map((pgChapter) => {
+          // Find the correct sequence number
+          const sequence = pgChapter.chapter_number || (existingChapters.length + newChapters.length + 1)
+          return this.transformChapter(pgChapter, novelUuid, sequence)
+        })
+        
+        // Insert new chapters
+        if (!this.config.dryRun && newChapters.length > 0) {
+          await this.mongoDb.collection('chapters').insertMany(newChapters)
+          console.log(`✅ ${newChapters.length} new chapters added to novel ${novelId}`)
+        }
+      } else {
+        console.log(`⏭️  No new chapters for novel ${novelId}`)
+      }
+
+      // Calculate total word count from all chapters
+      const allChapters = await this.mongoDb.collection('chapters')
+        .find({ novelId, isPublished: true })
+        .toArray()
+      
+      const totalWordCount = allChapters.reduce((sum: number, ch: any) => sum + (ch.wordCount || 0), 0)
+      
+      // Update novel with new stats
+      const updateData: any = {
+        views: pgNovel.views || existingNovel.views || 0,
+        wordCount: totalWordCount,
+        chaptersCount: allChapters.length,
+        updatedAt: new Date()
+      }
+
+      if (!this.config.dryRun) {
+        await this.mongoDb.collection('novels').updateOne(
+          { novelId },
+          { $set: updateData }
+        )
+        
+        // Update chapter info (firstChapter/latestChapter)
+        await this.populateChapterInfo(novelId, novelUuid)
+        
+        console.log(`✅ Novel ${novelId} updated: views=${updateData.views}, wordCount=${updateData.wordCount}, chapters=${updateData.chaptersCount}`)
+      }
+
+      return { 
+        novel: { ...existingNovel, ...updateData } as MongoNovel, 
+        chapters: newChapters 
+      }
+
+    } catch (error) {
+      console.error(`❌ Failed to update novel ${pgNovel.id}:`, error)
+      throw error
+    }
+  }
+
+  /**
    * Main migration method - processes novels one by one with individual indexing
    */
   async migrate(): Promise<MigrationResult> {
@@ -409,10 +488,10 @@ export class NovelMigrator {
       const errors: string[] = []
       const warnings: string[] = []
 
-      // Get total count
+      // Get total count (only published novels)
       if (!this.pgClient) throw new Error('PostgreSQL client not initialized')
       const countResult = await this.pgClient.query(
-        `SELECT COUNT(*) FROM "${this.dbConfig.postgres.schema}".novels WHERE deleted_at IS NULL`
+        `SELECT COUNT(*) FROM "${this.dbConfig.postgres.schema}".novels WHERE deleted_at IS NULL AND published = true`
       )
       totalNovels = parseInt(countResult.rows[0].count)
       

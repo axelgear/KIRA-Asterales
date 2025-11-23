@@ -46,7 +46,7 @@ export const ChapterListSearchService = {
 					index: CHAPTER_LIST_INDEX,
 					body: {
 						settings: {
-							'index.max_inner_result_window': 10000
+							'index.max_inner_result_window': 90000
 						}
 					}
 				})

@@ -24,4 +24,7 @@ export default async function browsingHistoryRoutes(fastify: FastifyInstance) {
 	// GET /history/stats - Get reading statistics for a user (public for authenticated users)
 	fastify.get('/history/stats', BrowsingHistoryController.stats)
 
+	// POST /history/bulk-sync - Bulk sync local history entries with server (requires authentication)
+	fastify.post('/history/bulk-sync', BrowsingHistoryController.bulkSync)
+
 }
