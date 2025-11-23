@@ -13,6 +13,7 @@
 		"migrate:novels:dry": "tsx src/scripts/migration/index.ts --dry-run",
 	  "migrate:users": "tsx src/scripts/migration/migrate-all.ts --skip-novels --skip-ratings --skip-bookmarks --skip-comments --skip-reading-lists --skip-wordcounts",
 	  "migrate:reading-lists": "tsx src/scripts/migration/reading-list-migrator.ts",
+	  "migrate:reading-history": "tsx src/scripts/migration/reading-history-migrator.ts",
 	  "migrate:all": "tsx src/scripts/migration/migrate-all.ts",
 	  "update:reading-list-covers": "tsx src/scripts/migration/update-reading-list-covers.ts",
 	  "fix:rbac-bindings": "tsx src/scripts/migration/fix-missing-rbac-bindings.ts",

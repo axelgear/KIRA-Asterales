@@ -17,6 +17,7 @@ import { NovelMigrator } from './migrator.js'
 import { TaxonomyMigrator } from './taxonomy-migrator.js'
 import { UserDataMigrator } from './user-data-migrator.js'
 import { ReadingListMigrator } from './reading-list-migrator.js'
+import { ReadingHistoryMigrator } from './reading-history-migrator.js'
 import type { MigrationConfig, DatabaseConfig } from './types.js'
 import { MongoClient } from 'mongodb'
 
@@ -175,6 +176,7 @@ async function main() {
 		const migrateBookmarks = process.env.MIGRATE_BOOKMARKS !== 'false'
 		const migrateComments = process.env.MIGRATE_COMMENTS !== 'false'
 		const migrateReadingLists = process.env.MIGRATE_READING_LISTS !== 'false'
+		const migrateReadingHistory = process.env.MIGRATE_READING_HISTORY !== 'false'
 		const updateWordCounts = process.env.UPDATE_WORDCOUNTS !== 'false'
 
 		console.log('\n⚙️  Migration flags:')
@@ -184,6 +186,7 @@ async function main() {
 		console.log(`   Bookmarks: ${migrateBookmarks ? '✅' : '⏭️  SKIPPED'}`)
 		console.log(`   Comments: ${migrateComments ? '✅' : '⏭️  SKIPPED'}`)
 		console.log(`   Reading Lists: ${migrateReadingLists ? '✅' : '⏭️  SKIPPED'}`)
+		console.log(`   Reading History: ${migrateReadingHistory ? '✅' : '⏭️  SKIPPED'}`)
 		console.log(`   Update Word Counts: ${updateWordCounts ? '✅' : '⏭️  SKIPPED'}`)
 		console.log('')
 
@@ -311,10 +314,25 @@ async function main() {
 			await readingListMigrator.cleanup()
 		}
 
-		/* ================== STEP 8: Fix Novel Stats (Word Count & Chapter Count) ================== */
+		/* ================== STEP 8: Reading History Migration ================== */
+		if (migrateReadingHistory) {
+			console.log('\n' + '='.repeat(70))
+			console.log('📖 STEP 8: Migrating Reading History')
+			console.log('='.repeat(70))
+			
+			const readingHistoryMigrator = new ReadingHistoryMigrator(dbConfig)
+			await readingHistoryMigrator.initialize()
+			
+			const readingHistoryResult = await readingHistoryMigrator.migrateReadingHistory(1000)
+			console.log(`✅ Reading History: ${readingHistoryResult.migrated}/${readingHistoryResult.total} migrated, ${readingHistoryResult.skipped} skipped, ${readingHistoryResult.failed} failed`)
+			
+			await readingHistoryMigrator.close()
+		}
+
+		/* ================== STEP 9: Fix Novel Stats (Word Count & Chapter Count) ================== */
 		if (updateWordCounts) {
 		console.log('\n' + '='.repeat(70))
-		console.log('🔢 STEP 8: Fixing Novel Stats (Word Count & Chapter Count)')
+		console.log('🔢 STEP 9: Fixing Novel Stats (Word Count & Chapter Count)')
 			console.log('='.repeat(70))
 			
 			try {
@@ -363,6 +381,8 @@ function parseArgs() {
 			process.env.MIGRATE_COMMENTS = 'false'
 		} else if (arg === '--skip-reading-lists') {
 			process.env.MIGRATE_READING_LISTS = 'false'
+		} else if (arg === '--skip-reading-history') {
+			process.env.MIGRATE_READING_HISTORY = 'false'
 		} else if (arg === '--skip-wordcounts') {
 			process.env.UPDATE_WORDCOUNTS = 'false'
 		} else if (arg === '--help' || arg === '-h') {
@@ -376,6 +396,7 @@ Options:
   --skip-bookmarks       Skip bookmarks migration
   --skip-comments        Skip comments migration
   --skip-reading-lists   Skip reading lists migration
+  --skip-reading-history Skip reading history migration
   --skip-wordcounts      Skip word count updates
   --help, -h             Show this help message
 
@@ -386,6 +407,7 @@ Environment Variables:
   MIGRATE_BOOKMARKS      Set to 'false' to skip bookmarks (default: true)
   MIGRATE_COMMENTS       Set to 'false' to skip comments (default: true)
   MIGRATE_READING_LISTS  Set to 'false' to skip reading lists (default: true)
+  MIGRATE_READING_HISTORY Set to 'false' to skip reading history (default: true)
   UPDATE_WORDCOUNTS      Set to 'false' to skip word counts (default: true)
   
   MIGRATION_MAX_NOVELS   Max novels to migrate (0 = all, default: 0)
