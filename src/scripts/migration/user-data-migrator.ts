@@ -115,15 +115,35 @@ export class UserDataMigrator {
 				/* Transform and insert */
 				for (const pgUser of users) {
 					try {
-						/* Check if user already exists */
-						const existing = await this.mongoDb.collection('users').findOne({ userId: pgUser.id })
-						if (existing) {
-							console.log(`⏭️  User ${pgUser.id} already exists, skipping`)
-							/* Still add to lookup map */
-							this.userIdToUuidMap.set(pgUser.id, existing.uuid)
-							migrated++
-							continue
+					/* Check if user already exists */
+					const existing = await this.mongoDb.collection('users').findOne({ userId: pgUser.id })
+					if (existing) {
+						console.log(`⏭️  User ${pgUser.id} already exists, checking RBAC binding`)
+						
+						/* Check if RBAC binding exists, create if missing */
+						const existingBinding = await this.mongoDb.collection('rbac-user-bindings').findOne({ userId: pgUser.id })
+						if (!existingBinding) {
+							try {
+								await this.mongoDb.collection('rbac-user-bindings').insertOne({
+									userId: pgUser.id,
+									uuid: existing.uuid,
+									roles: existing.roles || ['user'], // Use existing roles or default to 'user'
+									createdAt: existing.createdAt || new Date(),
+									updatedAt: new Date()
+								})
+								console.log(`✅ Created missing RBAC binding for existing user ${pgUser.id}`)
+							} catch (rbacError: any) {
+								if (rbacError.code !== 11000) { // Ignore duplicate key errors
+									console.error(`❌ Failed to create RBAC binding for existing user ${pgUser.id}:`, rbacError)
+								}
+							}
 						}
+						
+						/* Still add to lookup map */
+						this.userIdToUuidMap.set(pgUser.id, existing.uuid)
+						migrated++
+						continue
+					}
 
 						const userUuid = randomUUID()
 						
@@ -176,12 +196,30 @@ export class UserDataMigrator {
 							updatedAt: pgUser.updated_at || new Date()
 						}
 
-						await this.mongoDb.collection('users').insertOne(mongoUser)
-						
-						/* Update lookup map */
-						this.userIdToUuidMap.set(pgUser.id, userUuid)
-						
-						migrated++
+					await this.mongoDb.collection('users').insertOne(mongoUser)
+					
+					/* Create RBAC user binding */
+					try {
+						await this.mongoDb.collection('rbac-user-bindings').insertOne({
+							userId: pgUser.id,
+							uuid: userUuid,
+							roles: ['user'], // Default role for all users
+							createdAt: pgUser.created_at || new Date(),
+							updatedAt: pgUser.updated_at || new Date()
+						})
+						console.log(`✅ Created RBAC binding for user ${pgUser.id}`)
+					} catch (rbacError: any) {
+						if (rbacError.code === 11000) {
+							console.warn(`⚠️  RBAC binding for user ${pgUser.id} already exists`)
+						} else {
+							console.error(`❌ Failed to create RBAC binding for user ${pgUser.id}:`, rbacError)
+						}
+					}
+					
+					/* Update lookup map */
+					this.userIdToUuidMap.set(pgUser.id, userUuid)
+					
+					migrated++
 					} catch (error: any) {
 						/* Handle duplicate key errors gracefully */
 						if (error.code === 11000) {
@@ -323,7 +361,7 @@ export class UserDataMigrator {
 		console.log('\n📑 Starting bookmarks migration to favorites...')
 		
 		if (!this.pgClient) throw new Error('PostgreSQL client not initialized')
-		
+
 		/* Drop old userId index if it exists (from old schema) */
 		try {
 			const indexes = await this.mongoDb.collection('favorites').indexes()
@@ -360,17 +398,17 @@ export class UserDataMigrator {
 					continue
 				}
 
-			/* Parse bookmarks JSON */
-			const bookmarks = typeof user.bookmarks === 'string' 
-				? JSON.parse(user.bookmarks) 
-				: user.bookmarks
+				/* Parse bookmarks JSON */
+				const bookmarks = typeof user.bookmarks === 'string' 
+					? JSON.parse(user.bookmarks) 
+					: user.bookmarks
 
-			/* Handle various bookmark formats */
-			let novelIds: number[] = []
-			
-			if (Array.isArray(bookmarks)) {
+				/* Handle various bookmark formats */
+				let novelIds: number[] = []
+				
+				if (Array.isArray(bookmarks)) {
 				// Direct array: [1, 2, 3]
-				novelIds = bookmarks.filter(id => typeof id === 'number')
+					novelIds = bookmarks.filter(id => typeof id === 'number')
 			} else if (typeof bookmarks === 'object' && bookmarks !== null) {
 				// Object with bookmarks property: { bookmarks: [1, 2, 3] }
 				if (Array.isArray(bookmarks.bookmarks)) {
@@ -386,7 +424,7 @@ export class UserDataMigrator {
 						.map(key => parseInt(key))
 						.filter(id => !isNaN(id))
 				}
-			}
+				}
 
 				/* Create favorites for each bookmark */
 				for (const novelId of novelIds) {
