@@ -8,10 +8,18 @@
 import { Client } from 'pg'
 import { MongoClient } from 'mongodb'
 import { randomUUID } from 'node:crypto'
+import { writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { mapGenres } from './genre-mapper.js'
 import { elasticsearchManager } from '../../infrastructure/elasticsearch.js'
 import { NovelSearchService } from '../../services/NovelSearchService.js'
 import { ChapterListSearchService } from '../../services/ChapterListSearchService.js'
+
+// Get the migration scripts directory (same directory as this file)
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const MIGRATION_DIR = __dirname
 import type { 
   PgNovel, 
   PgChapter, 
@@ -154,16 +162,16 @@ export class NovelMigrator {
   /**
    * Get novels from PostgreSQL (only published ones)
    */
-  private async getPgNovels(limit: number, offset: number): Promise<PgNovel[]> {
+  private async getPgNovels(limit: number, offset: number, startFromId: number = 0): Promise<PgNovel[]> {
     if (!this.pgClient) throw new Error('PostgreSQL client not initialized')
 
     const query = `
       SELECT * FROM "${this.dbConfig.postgres.schema}".novels 
-      WHERE deleted_at IS NULL AND published = true
+      WHERE deleted_at IS NULL AND published = true AND id > $3
       ORDER BY id 
       LIMIT $1 OFFSET $2
     `
-    const result = await this.pgClient.query(query, [limit, offset])
+    const result = await this.pgClient.query(query, [limit, offset, startFromId])
     return result.rows
   }
 
@@ -495,37 +503,42 @@ export class NovelMigrator {
       )
       totalNovels = parseInt(countResult.rows[0].count)
       
-      // If maxNovels is 0, we're only doing index rebuilding, not migration
-      if (this.config.maxNovels === 0) {
-        console.log(`📊 Found ${totalNovels} novels in PostgreSQL`)
-        console.log('🔄 Max novels set to 0 - skipping migration, will only rebuild indices if requested')
-        
-        // If Elasticsearch indexing is enabled, we should rebuild indices
-        if (this.config.elasticsearchIndex) {
-          console.log('🔍 Elasticsearch indexing enabled - will rebuild indices after migration completion')
-        }
-        
-        return {
-          success: true,
-          message: `Migration skipped (maxNovels=0). Found ${totalNovels} novels in PostgreSQL.`,
-          details: {
-            novelsMigrated: 0,
-            chaptersMigrated: 0,
-            tagsMigrated: 0,
-            genresMigrated: 0,
-            errors,
-            warnings
-          }
+      // If maxNovels is 0 or negative, migrate all novels
+      const novelsToMigrate = (this.config.maxNovels <= 0) ? totalNovels : Math.min(totalNovels, this.config.maxNovels)
+
+      // Check for resume progress
+      let startFromNovelId = 0
+      let resumeOffset = 0
+      const progressFile = join(MIGRATION_DIR, 'migration-progress.json')
+      
+      if (existsSync(progressFile)) {
+        try {
+          const progressData = JSON.parse(readFileSync(progressFile, 'utf-8'))
+          startFromNovelId = progressData.lastNovelId
+          migratedNovels = progressData.novelsMigrated || 0
+          migratedChapters = progressData.chaptersMigrated || 0
+          
+          console.log(`\n📂 Found progress file - resuming from novel ID ${startFromNovelId}`)
+          console.log(`   Previously migrated: ${migratedNovels} novels, ${migratedChapters} chapters`)
+          console.log(`   Last migrated: ${progressData.lastNovelTitle}`)
+          console.log(`   Timestamp: ${progressData.timestamp}\n`)
+          
+          // Calculate offset based on last migrated novel
+          resumeOffset = migratedNovels
+        } catch (err) {
+          console.warn(`⚠️ Failed to read progress file, starting from beginning: ${err}`)
         }
       }
-      
-      const novelsToMigrate = Math.min(totalNovels, this.config.maxNovels)
 
       console.log(`📊 Found ${totalNovels} novels, migrating ${novelsToMigrate}`)
+      if (startFromNovelId > 0) {
+        console.log(`🔄 Resuming from novel ID > ${startFromNovelId}`)
+      }
       console.log('🔄 Processing novels one by one with individual Elasticsearch indexing...')
 
       // Get all novels to migrate (we'll process them one by one)
-      const pgNovels = await this.getPgNovels(novelsToMigrate, 0)
+      // If resuming, skip already migrated novels by ID
+      const pgNovels = await this.getPgNovels(novelsToMigrate - resumeOffset, 0, startFromNovelId)
       
       for (let i = 0; i < pgNovels.length; i++) {
         const pgNovel = pgNovels[i]
@@ -534,7 +547,7 @@ export class NovelMigrator {
           continue
         }
         
-        const novelNumber = i + 1
+        const novelNumber = resumeOffset + i + 1
         
         try {
           console.log(`\n📚 Processing novel ${novelNumber}/${novelsToMigrate}: ${pgNovel.name} (ID: ${pgNovel.id})`)
@@ -573,6 +586,25 @@ export class NovelMigrator {
           const progress = ((migratedNovels / novelsToMigrate) * 100).toFixed(1)
           console.log(`📈 Progress: ${progress}% (${migratedNovels}/${novelsToMigrate})`)
           console.log(`📊 Total chapters migrated so far: ${migratedChapters}`)
+          
+          // Save progress to file for resume capability
+          try {
+            const progressData = {
+              lastNovelId: novel.novelId,
+              lastNovelUuid: novel.uuid,
+              lastNovelTitle: novel.title,
+              novelsMigrated: migratedNovels,
+              chaptersMigrated: migratedChapters,
+              totalNovels: novelsToMigrate,
+              progress: parseFloat(progress),
+              timestamp: new Date().toISOString()
+            }
+            const progressFile = join(MIGRATION_DIR, 'migration-progress.json')
+            writeFileSync(progressFile, JSON.stringify(progressData, null, 2))
+            console.log(`💾 Progress saved to: ${progressFile}`)
+          } catch (err) {
+            console.warn(`⚠️ Failed to save progress file: ${err}`)
+          }
           
           // Memory management: Clear any cached data between novels
           if (global.gc) {
