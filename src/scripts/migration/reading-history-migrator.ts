@@ -24,7 +24,7 @@ export class ReadingHistoryMigrator {
 	private dbConfig: DatabaseConfig
 	private userIdToUuidMap: Map<number, string> = new Map()
 	private novelIdToSlugMap: Map<number, string> = new Map()
-	private chapterIdToDataMap: Map<number, { uuid: string; title: string; sequence: number }> = new Map()
+	// Don't load all chapters into memory - fetch on demand instead
 
 	constructor(dbConfig: DatabaseConfig) {
 		this.dbConfig = dbConfig
@@ -81,21 +81,31 @@ export class ReadingHistoryMigrator {
 		})
 		console.log(`📊 Novel map: ${this.novelIdToSlugMap.size} entries`)
 
-		// Build chapter ID to data map
-		const chapters = await this.mongoDb.collection('chapters').find({}).project({ 
-			chapterId: 1, 
-			uuid: 1, 
-			title: 1, 
-			sequence: 1 
-		}).toArray()
-		chapters.forEach((chapter: any) => {
-			this.chapterIdToDataMap.set(chapter.chapterId, {
+		// Don't load all chapters - too many! Fetch on demand instead
+		console.log(`📊 Chapter data will be fetched on-demand to save memory`)
+	}
+
+	/**
+	 * Get chapter data by chapter ID (on-demand fetch)
+	 */
+	private async getChapterData(chapterId: number): Promise<{ uuid: string; title: string; sequence: number } | null> {
+		try {
+			const chapter = await this.mongoDb.collection('chapters').findOne(
+				{ chapterId },
+				{ projection: { uuid: 1, title: 1, sequence: 1 } }
+			)
+			
+			if (!chapter) return null
+			
+			return {
 				uuid: chapter.uuid,
 				title: chapter.title,
 				sequence: chapter.sequence
-			})
-		})
-		console.log(`📊 Chapter map: ${this.chapterIdToDataMap.size} entries`)
+			}
+		} catch (error) {
+			console.error(`❌ Failed to fetch chapter ${chapterId}:`, error)
+			return null
+		}
 	}
 
 	/**
@@ -136,7 +146,7 @@ export class ReadingHistoryMigrator {
 						/* Get mapped values */
 						const userUuid = this.userIdToUuidMap.get(pgHistory.user_id)
 						const novelSlug = this.novelIdToSlugMap.get(pgHistory.novel_id)
-						const chapterData = this.chapterIdToDataMap.get(pgHistory.chapter_id)
+						const chapterData = await this.getChapterData(pgHistory.chapter_id)
 
 						if (!userUuid) {
 							console.warn(`⚠️  User ${pgHistory.user_id} not found, skipping`)

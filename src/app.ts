@@ -25,7 +25,8 @@ async function bootstrap() {
       requestTimeout: 15000,
       connectionTimeout: 5000,
       keepAliveTimeout: 5000,
-      maxRequestsPerSocket: 1000
+      maxRequestsPerSocket: 1000,
+      maxParamLength: 500 // Allow longer URL parameters for long novel slugs
     });
 
     // Accept empty JSON body as {} (for Rosales POST endpoints like /user/self)

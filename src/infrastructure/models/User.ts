@@ -5,7 +5,7 @@ const UserSchema = new Schema({
 	uuid: { type: String, index: true, unique: true, required: true },
 	username: { type: String, index: true, unique: true, required: true },
 	email: { type: String, index: true, unique: true, required: true },
-	password: { type: String, required: true },
+	password: { type: String, required: false }, // Optional for OAuth users
 	nickname: { type: String },
 	avatar: { type: String },
 	bio: { type: String },
