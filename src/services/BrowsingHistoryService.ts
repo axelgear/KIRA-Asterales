@@ -39,34 +39,33 @@ export const BrowsingHistoryService = {
         BrowsingHistoryModel.countDocuments(query),
       ]);
 
-      // Enrich items with novel and chapter details
-      const enrichedItems = await Promise.all(
-        items.map(async (item) => {
-          try {
-            const [novel, chapter] = await Promise.all([
-              NovelModel.findOne({ slug: item.novelSlug })
-                .select("uuid slug title coverImg author authorNickname description readCount status wordCount tagIds genreIds")
-                .lean(),
-              ChapterModel.findOne({ uuid: item.chapterUuid })
-                .select("uuid title sequence")
-                .lean(),
-            ]);
+      // OPTIMIZATION: Batch fetch all novels and chapters in 2 queries instead of N*2 queries
+      const novelSlugs = [...new Set(items.map(item => item.novelSlug))];
+      const chapterUuids = [...new Set(items.map(item => item.chapterUuid))];
 
-            return {
-              ...item,
-              novel: novel || null,
-              chapter: chapter || null,
-            };
-          } catch (error) {
-            console.warn(`⚠️ Failed to enrich history item ${item._id}:`, error);
-            return {
-              ...item,
-              novel: null,
-              chapter: null,
-            };
-          }
-        })
-      );
+      const [novels, chapters] = await Promise.all([
+        NovelModel.find({ slug: { $in: novelSlugs } })
+          .select("uuid slug title coverImg author authorNickname description readCount status wordCount tagIds genreIds chapterCount")
+          .lean(),
+        ChapterModel.find({ uuid: { $in: chapterUuids } })
+          .select("uuid title sequence")
+          .lean(),
+      ]);
+
+      // Create lookup maps for O(1) access
+      const novelMap = new Map(novels.map(n => [n.slug, n]));
+      const chapterMap = new Map(chapters.map(c => [c.uuid, c]));
+
+      // Enrich items using the maps (no additional DB queries)
+      const enrichedItems = items.map((item) => {
+        const novel = novelMap.get(item.novelSlug) || null;
+        const chapter = chapterMap.get(item.chapterUuid) || null;
+        return {
+          ...item,
+          novel,
+          chapter,
+        };
+      });
 
       const result = {
         items: enrichedItems,
@@ -79,7 +78,7 @@ export const BrowsingHistoryService = {
       };
 
       console.log(
-        `✅ Retrieved ${items.length} history items for user ${userUuid}`
+        `✅ Retrieved ${items.length} history items for user ${userUuid} (${novels.length} novels, ${chapters.length} chapters fetched)`
       );
       return result;
     } catch (error) {
@@ -319,7 +318,7 @@ export const BrowsingHistoryService = {
     }
   },
 
-  // Bulk sync local history entries with server (merge strategy)
+  // Bulk sync local history entries with server (optimized merge strategy)
   async bulkSyncHistory(userUuid: string, localEntries: Array<{
     novelSlug: string;
     chapterUuid: string;
@@ -332,6 +331,10 @@ export const BrowsingHistoryService = {
     try {
       console.log(`🔄 Bulk syncing ${localEntries.length} local history entries for user ${userUuid}`);
 
+      if (localEntries.length === 0) {
+        return { synced: 0, skipped: 0, failed: 0, errors: [] };
+      }
+
       const results = {
         synced: 0,
         skipped: 0,
@@ -339,86 +342,83 @@ export const BrowsingHistoryService = {
         errors: [] as string[],
       };
 
-      // Process entries in batches to avoid overwhelming the database
-      const batchSize = 50;
-      for (let i = 0; i < localEntries.length; i += batchSize) {
-        const batch = localEntries.slice(i, i + batchSize);
-        
-        await Promise.all(
-          batch.map(async (entry) => {
-            try {
-              const { novelSlug, chapterUuid, chapterTitle, chapterSequence, progress, device, lastReadAt } = entry;
+      // OPTIMIZATION: Batch fetch all existing server entries in ONE query
+      const novelSlugs = localEntries.map(e => e.novelSlug);
+      const existingEntries = await BrowsingHistoryModel.find({
+        userUuid,
+        novelSlug: { $in: novelSlugs }
+      }).lean();
+      
+      // Create lookup map for O(1) access
+      const existingMap = new Map(existingEntries.map(e => [e.novelSlug, e]));
+      console.log(`📊 Found ${existingEntries.length} existing entries on server`);
 
-              // Check if server already has this entry
-              const existing = await BrowsingHistoryModel.findOne({
-                userUuid,
-                novelSlug,
-              }).lean();
+      // OPTIMIZATION: Batch fetch all chapter info in ONE query
+      const chapterUuidsNeedingInfo = localEntries
+        .filter(e => !e.chapterTitle || typeof e.chapterSequence !== 'number')
+        .map(e => e.chapterUuid);
+      
+      const chapters = chapterUuidsNeedingInfo.length > 0 
+        ? await ChapterModel.find({ uuid: { $in: chapterUuidsNeedingInfo } })
+            .select("uuid title sequence")
+            .lean()
+        : [];
+      
+      const chapterMap = new Map(chapters.map(c => [c.uuid, c]));
+      console.log(`📊 Fetched ${chapters.length} chapter details`);
 
-              const localReadAt = lastReadAt ? new Date(lastReadAt) : new Date();
+      // Prepare bulk operations
+      const bulkOps: any[] = [];
 
-              // Merge strategy: keep the entry with the most recent lastReadAt
-              if (existing) {
-                const existingReadAt = new Date(existing.lastReadAt);
-                
-                // If local entry is newer, update server
-                if (localReadAt > existingReadAt) {
-                  // Get chapter details if not provided
-                  let finalChapterTitle = chapterTitle;
-                  let finalChapterSequence = chapterSequence;
+      for (const entry of localEntries) {
+        try {
+          const { novelSlug, chapterUuid, chapterTitle, chapterSequence, progress, device, lastReadAt } = entry;
+          const localReadAt = lastReadAt ? new Date(lastReadAt) : new Date();
+          const existing = existingMap.get(novelSlug);
 
-                  if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
-                    const chapter = await ChapterModel.findOne({ uuid: chapterUuid })
-                      .select("title sequence")
-                      .lean();
-                    
-                    if (chapter) {
-                      finalChapterTitle = finalChapterTitle || chapter.title;
-                      finalChapterSequence = finalChapterSequence ?? chapter.sequence;
-                    }
-                  }
+          // Get chapter info from map if not provided
+          let finalChapterTitle = chapterTitle;
+          let finalChapterSequence = chapterSequence;
+          
+          if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
+            const chapterInfo = chapterMap.get(chapterUuid);
+            if (chapterInfo) {
+              finalChapterTitle = finalChapterTitle || chapterInfo.title;
+              finalChapterSequence = finalChapterSequence ?? chapterInfo.sequence;
+            }
+          }
 
-                  await BrowsingHistoryModel.findOneAndUpdate(
-                    { userUuid, novelSlug },
-                    {
-                      $set: {
-                        chapterUuid,
-                        chapterTitle: finalChapterTitle || existing.chapterTitle,
-                        chapterSequence: finalChapterSequence ?? existing.chapterSequence,
-                        progress: progress ?? existing.progress,
-                        device: device || existing.device,
-                        lastReadAt: localReadAt,
-                        updatedAt: new Date(),
-                      },
-                    }
-                  );
-
-                  results.synced++;
-                  console.log(`✅ Updated server entry for ${novelSlug} (local was newer)`);
-                } else {
-                  results.skipped++;
-                  console.log(`⏭️ Skipped ${novelSlug} (server entry is newer or equal)`);
-                }
-              } else {
-                // Entry doesn't exist on server, create it
-                // Get chapter details if not provided
-                let finalChapterTitle = chapterTitle;
-                let finalChapterSequence = chapterSequence;
-
-                if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
-                  const chapter = await ChapterModel.findOne({ uuid: chapterUuid })
-                    .select("title sequence")
-                    .lean();
-                  
-                  if (chapter) {
-                    finalChapterTitle = finalChapterTitle || chapter.title;
-                    finalChapterSequence = finalChapterSequence ?? chapter.sequence;
-                  }
-                }
-
-                // Only create if we have valid chapter info
-                if (finalChapterTitle && typeof finalChapterSequence === 'number') {
-                  await BrowsingHistoryModel.create({
+          if (existing) {
+            const existingReadAt = new Date(existing.lastReadAt);
+            
+            // Only update if local is newer
+            if (localReadAt > existingReadAt) {
+              bulkOps.push({
+                updateOne: {
+                  filter: { userUuid, novelSlug },
+                  update: {
+                    $set: {
+                      chapterUuid,
+                      chapterTitle: finalChapterTitle || existing.chapterTitle,
+                      chapterSequence: finalChapterSequence ?? existing.chapterSequence,
+                      progress: progress ?? existing.progress,
+                      device: device || existing.device,
+                      lastReadAt: localReadAt,
+                      updatedAt: new Date(),
+                    },
+                  },
+                },
+              });
+              results.synced++;
+            } else {
+              results.skipped++;
+            }
+          } else {
+            // Create new entry if we have valid chapter info
+            if (finalChapterTitle && typeof finalChapterSequence === 'number') {
+              bulkOps.push({
+                insertOne: {
+                  document: {
                     userUuid,
                     novelSlug,
                     chapterUuid,
@@ -427,24 +427,28 @@ export const BrowsingHistoryService = {
                     progress: progress ?? 0,
                     device: device || '',
                     lastReadAt: localReadAt,
-                  });
-
-                  results.synced++;
-                  console.log(`✅ Created new server entry for ${novelSlug}`);
-                } else {
-                  results.failed++;
-                  results.errors.push(`Missing chapter info for ${novelSlug}`);
-                  console.warn(`⚠️ Skipped ${novelSlug} - missing chapter information`);
-                }
-              }
-            } catch (error) {
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  },
+                },
+              });
+              results.synced++;
+            } else {
               results.failed++;
-              const errorMsg = error instanceof Error ? error.message : String(error);
-              results.errors.push(`${entry.novelSlug}: ${errorMsg}`);
-              console.error(`❌ Failed to sync entry ${entry.novelSlug}:`, error);
+              results.errors.push(`Missing chapter info for ${novelSlug}`);
             }
-          })
-        );
+          }
+        } catch (error) {
+          results.failed++;
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          results.errors.push(`${entry.novelSlug}: ${errorMsg}`);
+        }
+      }
+
+      // Execute all operations in one bulk write
+      if (bulkOps.length > 0) {
+        console.log(`📝 Executing ${bulkOps.length} bulk operations...`);
+        await BrowsingHistoryModel.bulkWrite(bulkOps, { ordered: false });
       }
 
       console.log(
