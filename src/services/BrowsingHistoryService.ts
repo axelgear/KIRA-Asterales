@@ -46,11 +46,11 @@ export const BrowsingHistoryService = {
       const [novels, chapters] = await Promise.all([
         NovelModel.find({ slug: { $in: novelSlugs } })
           .select("uuid slug title coverImg author authorNickname description readCount status wordCount tagIds genreIds chapterCount")
-          .lean(),
+                .lean(),
         ChapterModel.find({ uuid: { $in: chapterUuids } })
-          .select("uuid title sequence")
-          .lean(),
-      ]);
+                .select("uuid title sequence")
+                .lean(),
+            ]);
 
       // Create lookup maps for O(1) access
       const novelMap = new Map(novels.map(n => [n.slug, n]));
@@ -60,11 +60,11 @@ export const BrowsingHistoryService = {
       const enrichedItems = items.map((item) => {
         const novel = novelMap.get(item.novelSlug) || null;
         const chapter = chapterMap.get(item.chapterUuid) || null;
-        return {
-          ...item,
+            return {
+              ...item,
           novel,
           chapter,
-        };
+            };
       });
 
       const result = {
@@ -371,22 +371,22 @@ export const BrowsingHistoryService = {
       const bulkOps: any[] = [];
 
       for (const entry of localEntries) {
-        try {
-          const { novelSlug, chapterUuid, chapterTitle, chapterSequence, progress, device, lastReadAt } = entry;
-          const localReadAt = lastReadAt ? new Date(lastReadAt) : new Date();
+            try {
+              const { novelSlug, chapterUuid, chapterTitle, chapterSequence, progress, device, lastReadAt } = entry;
+              const localReadAt = lastReadAt ? new Date(lastReadAt) : new Date();
           const existing = existingMap.get(novelSlug);
-
+                
           // Get chapter info from map if not provided
-          let finalChapterTitle = chapterTitle;
-          let finalChapterSequence = chapterSequence;
-          
-          if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
+                  let finalChapterTitle = chapterTitle;
+                  let finalChapterSequence = chapterSequence;
+
+                  if (!finalChapterTitle || typeof finalChapterSequence !== 'number') {
             const chapterInfo = chapterMap.get(chapterUuid);
             if (chapterInfo) {
               finalChapterTitle = finalChapterTitle || chapterInfo.title;
               finalChapterSequence = finalChapterSequence ?? chapterInfo.sequence;
-            }
-          }
+                    }
+                  }
 
           if (existing) {
             const existingReadAt = new Date(existing.lastReadAt);
@@ -397,25 +397,25 @@ export const BrowsingHistoryService = {
                 updateOne: {
                   filter: { userUuid, novelSlug },
                   update: {
-                    $set: {
-                      chapterUuid,
-                      chapterTitle: finalChapterTitle || existing.chapterTitle,
-                      chapterSequence: finalChapterSequence ?? existing.chapterSequence,
-                      progress: progress ?? existing.progress,
-                      device: device || existing.device,
-                      lastReadAt: localReadAt,
-                      updatedAt: new Date(),
-                    },
+                      $set: {
+                        chapterUuid,
+                        chapterTitle: finalChapterTitle || existing.chapterTitle,
+                        chapterSequence: finalChapterSequence ?? existing.chapterSequence,
+                        progress: progress ?? existing.progress,
+                        device: device || existing.device,
+                        lastReadAt: localReadAt,
+                        updatedAt: new Date(),
+                      },
                   },
                 },
               });
-              results.synced++;
-            } else {
-              results.skipped++;
-            }
-          } else {
+                  results.synced++;
+                } else {
+                  results.skipped++;
+                }
+              } else {
             // Create new entry if we have valid chapter info
-            if (finalChapterTitle && typeof finalChapterSequence === 'number') {
+                if (finalChapterTitle && typeof finalChapterSequence === 'number') {
               bulkOps.push({
                 insertOne: {
                   document: {
@@ -431,17 +431,17 @@ export const BrowsingHistoryService = {
                     updatedAt: new Date(),
                   },
                 },
-              });
-              results.synced++;
-            } else {
+                  });
+                  results.synced++;
+                } else {
+                  results.failed++;
+                  results.errors.push(`Missing chapter info for ${novelSlug}`);
+                }
+              }
+            } catch (error) {
               results.failed++;
-              results.errors.push(`Missing chapter info for ${novelSlug}`);
-            }
-          }
-        } catch (error) {
-          results.failed++;
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          results.errors.push(`${entry.novelSlug}: ${errorMsg}`);
+              const errorMsg = error instanceof Error ? error.message : String(error);
+              results.errors.push(`${entry.novelSlug}: ${errorMsg}`);
         }
       }
 

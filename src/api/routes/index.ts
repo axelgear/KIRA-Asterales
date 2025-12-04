@@ -38,6 +38,9 @@ export default async function registerRoutes(fastify: FastifyInstance) {
 	const CommentRoutes = (await import('./comment.js')).default
 	await fastify.register(CommentRoutes)
 
+	const UpdateRequestRoutes = (await import('./updateRequest.js')).default
+	await fastify.register(UpdateRequestRoutes)
+
 	/*
 	// Example protected routes showing different RBAC patterns with elegant syntax
 	fastify.get('/admin/users', { preHandler: [createAdminGuard('both')] }, async () => {

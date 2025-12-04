@@ -1,0 +1,360 @@
+import { UpdateRequestModel } from '../infrastructure/models/UpdateRequest.js'
+import { UpdateRequestVoteModel } from '../infrastructure/models/UpdateRequestVote.js'
+import { NovelModel } from '../infrastructure/models/Novel.js'
+import { UserModel } from '../infrastructure/models/User.js'
+import { v4 as uuidv4 } from 'uuid'
+
+export interface CreateUpdateRequestParams {
+	authorUserUuid: string
+	novelSlug: string
+	message?: string
+}
+
+export interface UpdateRequestFilters {
+	status?: string
+	novelSlug?: string
+	authorUserUuid?: string
+}
+
+export const UpdateRequestService = {
+	// Create a new update request
+	async createRequest(params: CreateUpdateRequestParams) {
+		try {
+			const { authorUserUuid, novelSlug, message } = params
+
+			// Check if user already requested this novel
+			const existing = await UpdateRequestModel.findOne({
+				authorUserUuid,
+				novelSlug,
+				status: { $in: ['pending', 'approved'] }
+			})
+
+			if (existing) {
+				return {
+					success: false,
+					message: 'You have already requested an update for this novel'
+				}
+			}
+
+			// Get novel details
+			const novel = await NovelModel.findOne({ slug: novelSlug })
+				.select('uuid slug title coverImg authorNickname status chapterCount')
+				.lean()
+
+			if (!novel) {
+				return {
+					success: false,
+					message: 'Novel not found'
+				}
+			}
+
+			// Get user details
+			const user = await UserModel.findOne({ userUuid: authorUserUuid })
+				.select('username userNickname avatar')
+				.lean()
+
+			const request = await UpdateRequestModel.create({
+				uuid: uuidv4(),
+				authorUserUuid,
+				authorUsername: user?.username || '',
+				authorNickname: user?.userNickname || '',
+				authorAvatar: user?.avatar || '',
+				novelSlug: novel.slug,
+				novelUuid: novel.uuid || '',
+				novelTitle: novel.title,
+				novelCover: novel.coverImg || '',
+				novelAuthor: novel.authorNickname || '',
+				novelStatus: novel.status || '',
+				novelChapterCount: novel.chapterCount || 0,
+				message: message || '',
+				upvoteCount: 1, // Auto-upvote by creator
+				status: 'pending'
+			})
+
+			// Auto-vote for creator
+			await UpdateRequestVoteModel.create({
+				requestUuid: request.uuid,
+				userUuid: authorUserUuid,
+				voteType: 'upvote'
+			})
+
+			console.log(`✅ Created update request for ${novelSlug} by ${authorUserUuid}`)
+
+			return {
+				success: true,
+				message: 'Update request created successfully',
+				request
+			}
+		} catch (error: any) {
+			if (error.code === 11000) {
+				return {
+					success: false,
+					message: 'You have already requested an update for this novel'
+				}
+			}
+			console.error('❌ Error creating update request:', error)
+			throw error
+		}
+	},
+
+	// Get update requests with pagination and filters
+	async getRequests(page = 1, limit = 20, filters: UpdateRequestFilters = {}, sortBy = 'votes') {
+		try {
+			const skip = (page - 1) * limit
+			const query: any = {}
+
+			if (filters.status) query.status = filters.status
+			if (filters.novelSlug) query.novelSlug = filters.novelSlug
+			if (filters.authorUserUuid) query.authorUserUuid = filters.authorUserUuid
+
+			// Default to pending status
+			if (!filters.status) query.status = 'pending'
+
+			// Sort options
+			let sortOption: any = { upvoteCount: -1, createdAt: -1 }
+			if (sortBy === 'newest') sortOption = { createdAt: -1 }
+			if (sortBy === 'oldest') sortOption = { createdAt: 1 }
+
+			const [items, total] = await Promise.all([
+				UpdateRequestModel.find(query)
+					.sort(sortOption)
+					.skip(skip)
+					.limit(limit)
+					.lean(),
+				UpdateRequestModel.countDocuments(query)
+			])
+
+			return {
+				items,
+				total,
+				page,
+				limit,
+				totalPages: Math.ceil(total / limit),
+				hasNext: page * limit < total,
+				hasPrev: page > 1
+			}
+		} catch (error) {
+			console.error('❌ Error fetching update requests:', error)
+			return {
+				items: [],
+				total: 0,
+				page,
+				limit,
+				totalPages: 0,
+				hasNext: false,
+				hasPrev: false
+			}
+		}
+	},
+
+	// Get a single request by UUID
+	async getRequestByUuid(uuid: string) {
+		try {
+			return await UpdateRequestModel.findOne({ uuid }).lean()
+		} catch (error) {
+			console.error('❌ Error fetching request:', error)
+			return null
+		}
+	},
+
+	// Vote on a request
+	async vote(requestUuid: string, userUuid: string, voteType: 'upvote' | 'downvote') {
+		try {
+			// Check if user already voted
+			const existingVote = await UpdateRequestVoteModel.findOne({
+				requestUuid,
+				userUuid
+			})
+
+			if (existingVote) {
+				if (existingVote.voteType === voteType) {
+					// Remove vote (toggle off)
+					await UpdateRequestVoteModel.deleteOne({ _id: existingVote._id })
+					
+					const update = voteType === 'upvote' 
+						? { $inc: { upvoteCount: -1 } }
+						: { $inc: { downvoteCount: -1 } }
+					
+					const request = await UpdateRequestModel.findOneAndUpdate(
+						{ uuid: requestUuid },
+						update,
+						{ new: true }
+					)
+
+					return {
+						success: true,
+						action: 'removed',
+						voteType: null,
+						upvoteCount: request?.upvoteCount ?? 0,
+						downvoteCount: request?.downvoteCount ?? 0
+					}
+				} else {
+					// Change vote
+					existingVote.voteType = voteType
+					await existingVote.save()
+
+					const update = voteType === 'upvote'
+						? { $inc: { upvoteCount: 1, downvoteCount: -1 } }
+						: { $inc: { upvoteCount: -1, downvoteCount: 1 } }
+
+					const request = await UpdateRequestModel.findOneAndUpdate(
+						{ uuid: requestUuid },
+						update,
+						{ new: true }
+					)
+
+					return {
+						success: true,
+						action: 'changed',
+						voteType,
+						upvoteCount: request?.upvoteCount ?? 0,
+						downvoteCount: request?.downvoteCount ?? 0
+					}
+				}
+			}
+
+			// New vote
+			await UpdateRequestVoteModel.create({
+				requestUuid,
+				userUuid,
+				voteType
+			})
+
+			const update = voteType === 'upvote'
+				? { $inc: { upvoteCount: 1 } }
+				: { $inc: { downvoteCount: 1 } }
+
+			const request = await UpdateRequestModel.findOneAndUpdate(
+				{ uuid: requestUuid },
+				update,
+				{ new: true }
+			)
+
+			return {
+				success: true,
+				action: 'added',
+				voteType,
+				upvoteCount: request?.upvoteCount ?? 0,
+				downvoteCount: request?.downvoteCount ?? 0
+			}
+		} catch (error) {
+			console.error('❌ Error voting:', error)
+			return {
+				success: false,
+				message: 'Failed to vote'
+			}
+		}
+	},
+
+	// Get user's vote for a request
+	async getUserVote(requestUuid: string, userUuid: string) {
+		try {
+			const vote = await UpdateRequestVoteModel.findOne({
+				requestUuid,
+				userUuid
+			}).lean()
+
+			return vote?.voteType || null
+		} catch (error) {
+			return null
+		}
+	},
+
+	// Get user's votes for multiple requests (batch)
+	async getUserVotes(requestUuids: string[], userUuid: string) {
+		try {
+			const votes = await UpdateRequestVoteModel.find({
+				requestUuid: { $in: requestUuids },
+				userUuid
+			}).lean()
+
+			const voteMap: Record<string, string> = {}
+			for (const vote of votes) {
+				voteMap[vote.requestUuid] = vote.voteType
+			}
+
+			return voteMap
+		} catch (error) {
+			return {}
+		}
+	},
+
+	// Delete a request (by author or admin)
+	async deleteRequest(requestUuid: string, userUuid: string, isAdmin = false) {
+		try {
+			const request = await UpdateRequestModel.findOne({ uuid: requestUuid })
+
+			if (!request) {
+				return { success: false, message: 'Request not found' }
+			}
+
+			if (!isAdmin && request.authorUserUuid !== userUuid) {
+				return { success: false, message: 'Not authorized to delete this request' }
+			}
+
+			// Delete votes first
+			await UpdateRequestVoteModel.deleteMany({ requestUuid })
+			// Delete request
+			await UpdateRequestModel.deleteOne({ uuid: requestUuid })
+
+			return { success: true, message: 'Request deleted successfully' }
+		} catch (error) {
+			console.error('❌ Error deleting request:', error)
+			return { success: false, message: 'Failed to delete request' }
+		}
+	},
+
+	// Admin: Update request status
+	async updateStatus(requestUuid: string, status: string, adminUserUuid: string, adminResponse?: string) {
+		try {
+			const request = await UpdateRequestModel.findOneAndUpdate(
+				{ uuid: requestUuid },
+				{
+					$set: {
+						status,
+						adminResponse: adminResponse || '',
+						respondedAt: new Date(),
+						respondedByUserUuid: adminUserUuid
+					}
+				},
+				{ new: true }
+			)
+
+			if (!request) {
+				return { success: false, message: 'Request not found' }
+			}
+
+			return { success: true, request }
+		} catch (error) {
+			console.error('❌ Error updating status:', error)
+			return { success: false, message: 'Failed to update status' }
+		}
+	},
+
+	// Get top voted requests (for homepage/featured)
+	async getTopRequests(limit = 10) {
+		try {
+			return await UpdateRequestModel.find({ status: 'pending' })
+				.sort({ upvoteCount: -1 })
+				.limit(limit)
+				.lean()
+		} catch (error) {
+			console.error('❌ Error fetching top requests:', error)
+			return []
+		}
+	},
+
+	// Check if a novel already has a pending request
+	async hasExistingRequest(novelSlug: string) {
+		try {
+			const count = await UpdateRequestModel.countDocuments({
+				novelSlug,
+				status: 'pending'
+			})
+			return count > 0
+		} catch (error) {
+			return false
+		}
+	}
+}
+
