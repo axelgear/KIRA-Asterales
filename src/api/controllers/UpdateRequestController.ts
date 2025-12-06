@@ -43,9 +43,12 @@ export const UpdateRequestController = {
 			const q = request.query as any
 			const page = Number(q.page) || 1
 			const limit = Math.min(Number(q.limit) || 20, 100)
-			const status = q.status ? String(q.status) : undefined
-			const novelSlug = q.novelSlug ? String(q.novelSlug) : undefined
 			const sortBy = q.sortBy ? String(q.sortBy) : 'votes'
+
+			// Build filters object, only including defined values
+			const filters: { status?: string; novelSlug?: string } = {}
+			if (q.status) filters.status = String(q.status)
+			if (q.novelSlug) filters.novelSlug = String(q.novelSlug)
 
 			// Try to get user UUID for vote status
 			let userUuid: string | null = null
@@ -54,7 +57,7 @@ export const UpdateRequestController = {
 				userUuid = authResult.userUuid!
 			}
 
-			const result = await UpdateRequestService.getRequests(page, limit, { status, novelSlug }, sortBy)
+			const result = await UpdateRequestService.getRequests(page, limit, filters, sortBy)
 
 			// Get user's votes for these requests
 			let userVotes: Record<string, string> = {}
@@ -273,6 +276,91 @@ export const UpdateRequestController = {
 			return {
 				success: false,
 				message: 'Error updating status'
+			}
+		}
+	},
+
+	// GET /update-requests/weekly-info - Get current week info
+	weeklyInfo: async (request: FastifyRequest) => {
+		try {
+			const q = request.query as any
+			const weekNumber = q.week ? String(q.week) : undefined
+
+			const weekInfo = UpdateRequestService.getWeekInfo(weekNumber)
+			const top3Data = await UpdateRequestService.getWeeklyTop3(weekNumber)
+
+			// Try to get user UUID for vote status
+			let userUuid: string | null = null
+			const authResult = validateJwtToken(request)
+			if (authResult.isValid) {
+				userUuid = authResult.userUuid!
+			}
+
+			// Get user's votes for top 3
+			let userVotes: Record<string, string> = {}
+			if (userUuid && top3Data.top3.length > 0) {
+				const requestUuids = top3Data.top3.map(r => r.uuid)
+				userVotes = await UpdateRequestService.getUserVotes(requestUuids, userUuid)
+			}
+
+			// Attach user vote status
+			const top3WithVotes = top3Data.top3.map(item => ({
+				...item,
+				userVote: userVotes[item.uuid] || null
+			}))
+
+			return {
+				success: true,
+				weekNumber: weekInfo.weekNumber,
+				weekStart: weekInfo.start.toISOString(),
+				weekEnd: weekInfo.end.toISOString(),
+				top3: top3WithVotes
+			}
+		} catch (error) {
+			console.error('❌ Error fetching weekly info:', error)
+			return {
+				success: false,
+				message: 'Error fetching weekly info'
+			}
+		}
+	},
+
+	// GET /update-requests/past-winners - Get past weekly winners
+	pastWinners: async (request: FastifyRequest) => {
+		try {
+			const q = request.query as any
+			const limit = Math.min(Number(q.limit) || 30, 100)
+
+			const winners = await UpdateRequestService.getPastWinners(limit)
+
+			return {
+				success: true,
+				winners
+			}
+		} catch (error) {
+			console.error('❌ Error fetching past winners:', error)
+			return {
+				success: false,
+				message: 'Error fetching past winners'
+			}
+		}
+	},
+
+	// GET /update-requests/weeks - Get list of available weeks
+	availableWeeks: async (_request: FastifyRequest) => {
+		try {
+			const weeks = await UpdateRequestService.getAvailableWeeks()
+
+			return {
+				success: true,
+				weeks,
+				currentWeek: UpdateRequestService.getCurrentWeek()
+			}
+		} catch (error) {
+			console.error('❌ Error fetching available weeks:', error)
+			return {
+				success: false,
+				message: 'Error fetching available weeks'
 			}
 		}
 	}

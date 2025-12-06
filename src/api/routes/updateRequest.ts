@@ -7,6 +7,9 @@ export default async function updateRequestRoutes(fastify: FastifyInstance) {
 	fastify.get('/update-requests/list', UpdateRequestController.list)
 	fastify.get('/update-requests/top', UpdateRequestController.top)
 	fastify.get('/update-requests/check', UpdateRequestController.check)
+	fastify.get('/update-requests/weekly-info', UpdateRequestController.weeklyInfo)
+	fastify.get('/update-requests/past-winners', UpdateRequestController.pastWinners)
+	fastify.get('/update-requests/weeks', UpdateRequestController.availableWeeks)
 
 	// Authenticated routes
 	fastify.post('/update-requests/create', { preHandler: [createRbacGuard('both')] }, UpdateRequestController.create)

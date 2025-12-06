@@ -11,9 +11,41 @@ export interface CreateUpdateRequestParams {
 }
 
 export interface UpdateRequestFilters {
-	status?: string
-	novelSlug?: string
-	authorUserUuid?: string
+	status?: string | undefined
+	novelSlug?: string | undefined
+	authorUserUuid?: string | undefined
+	weekNumber?: string | undefined
+}
+
+// Helper to get current week number in "YYYY-WW" format
+function getCurrentWeekNumber(): string {
+	const now = new Date()
+	const startOfYear = new Date(now.getFullYear(), 0, 1)
+	const days = Math.floor((now.getTime() - startOfYear.getTime()) / (24 * 60 * 60 * 1000))
+	const weekNum = Math.ceil((days + startOfYear.getDay() + 1) / 7)
+	return `${now.getFullYear()}-${weekNum.toString().padStart(2, '0')}`
+}
+
+// Helper to get week start and end dates
+function getWeekDates(weekNumber?: string): { start: Date; end: Date } {
+	const week = weekNumber || getCurrentWeekNumber()
+	const [year, weekNum] = week.split('-').map(Number)
+	
+	// Get first day of the year
+	const firstDayOfYear = new Date(year, 0, 1)
+	// Find the first Sunday of the year
+	const firstSunday = new Date(year, 0, 1 + (7 - firstDayOfYear.getDay()) % 7)
+	
+	// Calculate start of the requested week
+	const start = new Date(firstSunday)
+	start.setDate(firstSunday.getDate() + (weekNum - 1) * 7)
+	
+	// End is 7 days later
+	const end = new Date(start)
+	end.setDate(start.getDate() + 7)
+	end.setMilliseconds(-1) // Set to last millisecond of Saturday
+	
+	return { start, end }
 }
 
 export const UpdateRequestService = {
@@ -48,28 +80,37 @@ export const UpdateRequestService = {
 				}
 			}
 
+			// Reject completed novels - they don't need updates
+			if (novel.status?.toLowerCase() === 'completed') {
+				return {
+					success: false,
+					message: 'This novel is already completed and does not need updates'
+				}
+			}
+
 			// Get user details
 			const user = await UserModel.findOne({ userUuid: authorUserUuid })
 				.select('username userNickname avatar')
 				.lean()
 
-			const request = await UpdateRequestModel.create({
-				uuid: uuidv4(),
-				authorUserUuid,
-				authorUsername: user?.username || '',
-				authorNickname: user?.userNickname || '',
-				authorAvatar: user?.avatar || '',
-				novelSlug: novel.slug,
-				novelUuid: novel.uuid || '',
-				novelTitle: novel.title,
-				novelCover: novel.coverImg || '',
-				novelAuthor: novel.authorNickname || '',
-				novelStatus: novel.status || '',
-				novelChapterCount: novel.chapterCount || 0,
-				message: message || '',
-				upvoteCount: 1, // Auto-upvote by creator
-				status: 'pending'
-			})
+		const request = await UpdateRequestModel.create({
+			uuid: uuidv4(),
+			authorUserUuid,
+			authorUsername: user?.username || '',
+			authorNickname: user?.userNickname || '',
+			authorAvatar: user?.avatar || '',
+			novelSlug: novel.slug,
+			novelUuid: novel.uuid || '',
+			novelTitle: novel.title,
+			novelCover: novel.coverImg || '',
+			novelAuthor: novel.authorNickname || '',
+			novelStatus: novel.status || '',
+			novelChapterCount: novel.chapterCount || 0,
+			message: message || '',
+			upvoteCount: 1, // Auto-upvote by creator
+			weekNumber: getCurrentWeekNumber(),
+			status: 'pending'
+		})
 
 			// Auto-vote for creator
 			await UpdateRequestVoteModel.create({
@@ -97,6 +138,18 @@ export const UpdateRequestService = {
 		}
 	},
 
+	// Get current week number
+	getCurrentWeek() {
+		return getCurrentWeekNumber()
+	},
+
+	// Get week dates for display
+	getWeekInfo(weekNumber?: string) {
+		const week = weekNumber || getCurrentWeekNumber()
+		const { start, end } = getWeekDates(week)
+		return { weekNumber: week, start, end }
+	},
+
 	// Get update requests with pagination and filters
 	async getRequests(page = 1, limit = 20, filters: UpdateRequestFilters = {}, sortBy = 'votes') {
 		try {
@@ -106,9 +159,11 @@ export const UpdateRequestService = {
 			if (filters.status) query.status = filters.status
 			if (filters.novelSlug) query.novelSlug = filters.novelSlug
 			if (filters.authorUserUuid) query.authorUserUuid = filters.authorUserUuid
+			if (filters.weekNumber) query.weekNumber = filters.weekNumber
 
-			// Default to pending status
+			// Default to pending status and current week
 			if (!filters.status) query.status = 'pending'
+			if (!filters.weekNumber) query.weekNumber = getCurrentWeekNumber()
 
 			// Sort options
 			let sortOption: any = { upvoteCount: -1, createdAt: -1 }
@@ -354,6 +409,103 @@ export const UpdateRequestService = {
 			return count > 0
 		} catch (error) {
 			return false
+		}
+	},
+
+	// Get top 3 requests for the current week
+	async getWeeklyTop3(weekNumber?: string) {
+		try {
+			const week = weekNumber || getCurrentWeekNumber()
+			const top3 = await UpdateRequestModel.find({
+				weekNumber: week,
+				status: 'pending'
+			})
+				.sort({ upvoteCount: -1, createdAt: 1 })
+				.limit(3)
+				.lean()
+
+			return {
+				weekNumber: week,
+				weekDates: getWeekDates(week),
+				top3
+			}
+		} catch (error) {
+			console.error('❌ Error fetching weekly top 3:', error)
+			return {
+				weekNumber: weekNumber || getCurrentWeekNumber(),
+				weekDates: getWeekDates(weekNumber),
+				top3: []
+			}
+		}
+	},
+
+	// Get past week winners (for history)
+	async getPastWinners(limit = 10) {
+		try {
+			return await UpdateRequestModel.find({
+				isWeeklyWinner: true
+			})
+				.sort({ weekNumber: -1, weeklyRank: 1 })
+				.limit(limit)
+				.lean()
+		} catch (error) {
+			console.error('❌ Error fetching past winners:', error)
+			return []
+		}
+	},
+
+	// Process end of week - mark top 3 as winners (run via cron job)
+	async processWeeklyWinners(weekNumber: string) {
+		try {
+			// Get top 3 for the specified week
+			const top3 = await UpdateRequestModel.find({
+				weekNumber,
+				status: 'pending'
+			})
+				.sort({ upvoteCount: -1, createdAt: 1 })
+				.limit(3)
+				.lean()
+
+			// Mark them as winners
+			for (let i = 0; i < top3.length; i++) {
+				await UpdateRequestModel.updateOne(
+					{ uuid: top3[i].uuid },
+					{
+						$set: {
+							isWeeklyWinner: true,
+							weeklyRank: i + 1,
+							status: 'approved' // Approve the top 3
+						}
+					}
+				)
+			}
+
+			console.log(`✅ Processed weekly winners for week ${weekNumber}:`, top3.map(r => r.novelTitle))
+
+			return {
+				success: true,
+				weekNumber,
+				winners: top3.map((r, i) => ({
+					rank: i + 1,
+					novelTitle: r.novelTitle,
+					novelSlug: r.novelSlug,
+					upvoteCount: r.upvoteCount
+				}))
+			}
+		} catch (error) {
+			console.error('❌ Error processing weekly winners:', error)
+			return { success: false, message: 'Failed to process weekly winners' }
+		}
+	},
+
+	// Get available weeks (for archive)
+	async getAvailableWeeks() {
+		try {
+			const weeks = await UpdateRequestModel.distinct('weekNumber')
+			return weeks.sort().reverse() // Most recent first
+		} catch (error) {
+			console.error('❌ Error fetching available weeks:', error)
+			return []
 		}
 	}
 }

@@ -20,6 +20,11 @@ const UpdateRequestSchema = new Schema({
 	// Voting
 	upvoteCount: { type: Number, default: 0, index: true },
 	downvoteCount: { type: Number, default: 0 },
+	// Weekly voting cycle (format: "YYYY-WW", e.g., "2024-49")
+	weekNumber: { type: String, default: '', index: true },
+	// Whether this request was in the top 3 for its week
+	isWeeklyWinner: { type: Boolean, default: false },
+	weeklyRank: { type: Number, default: 0 }, // 1, 2, or 3 if winner
 	// Status: pending | approved | rejected | completed
 	status: { type: String, default: 'pending', index: true },
 	// Admin response
@@ -33,6 +38,8 @@ UpdateRequestSchema.index({ upvoteCount: -1, createdAt: -1 })
 UpdateRequestSchema.index({ novelSlug: 1, authorUserUuid: 1 }, { unique: true }) // One request per user per novel
 UpdateRequestSchema.index({ status: 1, upvoteCount: -1 })
 UpdateRequestSchema.index({ authorUserUuid: 1, createdAt: -1 })
+UpdateRequestSchema.index({ weekNumber: 1, upvoteCount: -1 }) // For weekly leaderboard
+UpdateRequestSchema.index({ weekNumber: 1, isWeeklyWinner: 1 }) // For past winners
 
 export type UpdateRequestDocument = InferSchemaType<typeof UpdateRequestSchema>
 export const UpdateRequestModel = model('UpdateRequest', UpdateRequestSchema)

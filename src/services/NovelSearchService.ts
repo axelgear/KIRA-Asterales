@@ -351,12 +351,36 @@ export const NovelSearchService = {
 		}
 		if (source?.length) filter.push({ terms: { source } })
 
-		// Query (scoring) - improved multi_match with should for better relevance
+		// Query (scoring) - improved with exact match boosting for better relevance
 		if (q) {
+			const lowerQ = q.toLowerCase().trim()
+			
 			should.push(
+				// Highest priority: Exact title match (keyword field)
+				{ term: { 'title.keyword': { value: q, boost: 100 } } },
+				
+				// Very high priority: Title starts with the query
+				{ prefix: { 'title.keyword': { value: q, boost: 50 } } },
+				
+				// High priority: Exact phrase match in title
+				{ match_phrase: { title: { query: q, boost: 25, slop: 0 } } },
+				
+				// Medium-high priority: Phrase match with some flexibility
+				{ match_phrase: { title: { query: q, boost: 15, slop: 2 } } },
+				
+				// Medium priority: All words in title (AND)
+				{ match: { title: { query: q, boost: 10, operator: 'and' } } },
+				
+				// Lower priority: Any word in title (OR)
 				{ match: { title: { query: q, boost: 3 } } },
+				
+				// Slug match (useful for partial URL matches)
+				{ wildcard: { slug: { value: `*${lowerQ.replace(/\s+/g, '-')}*`, boost: 8 } } },
+				
+				// Lowest priority: Description match
 				{ match: { description: { query: q, boost: 1 } } }
 			)
+			
 			must.push({ bool: { should, minimum_should_match: 1 } })
 		}
 
@@ -397,9 +421,16 @@ export const NovelSearchService = {
                 primarySort = null
         }
 
-        const sortClause = sort === 'popular'
-            ? [primarySort ?? { popularityScore: 'desc' }, { updatedAt: dir }]
-            : [primarySort ?? { updatedAt: dir }]
+        // When there's a search query, prioritize relevance score first
+        let sortClause: any[]
+        if (q && !primarySort) {
+            // For text searches without explicit sort, use relevance score
+            sortClause = [{ _score: 'desc' }, { updatedAt: dir }]
+        } else if (sort === 'popular') {
+            sortClause = [primarySort ?? { popularityScore: 'desc' }, { updatedAt: dir }]
+        } else {
+            sortClause = [primarySort ?? { updatedAt: dir }]
+        }
 
 		const searchResult = await client.search({
 			index: NOVEL_INDEX,
@@ -446,9 +477,15 @@ export const NovelSearchService = {
 			}
 			
 			if (q) {
+				// For MongoDB, we use text search if available, otherwise regex
+				// First try exact/near-exact matches, then fallback to regex
+				const escapedQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 				query.$or = [
-					{ title: { $regex: q, $options: 'i' } },
-					{ description: { $regex: q, $options: 'i' } }
+					{ title: { $regex: `^${escapedQ}$`, $options: 'i' } }, // Exact match
+					{ title: { $regex: `^${escapedQ}`, $options: 'i' } }, // Starts with
+					{ title: { $regex: escapedQ, $options: 'i' } }, // Contains
+					{ slug: { $regex: escapedQ.replace(/\s+/g, '-'), $options: 'i' } }, // Slug match
+					{ description: { $regex: escapedQ, $options: 'i' } }
 				]
 			}
 			
